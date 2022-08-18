@@ -682,21 +682,21 @@ do { \
     }
         
 void checkFreeMemory(const GpuIds& gpuids,size_t *mem_GPU_global){
-        size_t memfree;
-        size_t memtotal;
-        int deviceCount = gpuids.GetLength();
-        for (int dev = 0; dev < deviceCount; dev++){
-            cudaSetDevice(gpuids[dev]);
-            cudaMemGetInfo(&memfree,&memtotal);
-            if(dev==0) *mem_GPU_global=memfree;
-            if(memfree<memtotal/2){
-                mexErrMsgIdAndTxt("POCS_TV:GPU","One (or more) of your GPUs is being heavily used by another program (possibly graphics-based).\n Free the GPU to run TIGRE\n");
-            }
-            cudaCheckErrors("Check mem error");
+//        size_t memfree;
+//        size_t memtotal;
+//        int deviceCount = gpuids.GetLength();
+//        for (int dev = 0; dev < deviceCount; dev++){
+//            cudaSetDevice(gpuids[dev]);
+//            cudaMemGetInfo(&memfree,&memtotal);
+//            if(dev==0) *mem_GPU_global=memfree;
+//            if(memfree<memtotal/2){
+//                mexErrMsgIdAndTxt("POCS_TV:GPU","One (or more) of your GPUs is being heavily used by another program (possibly graphics-based).\n Free the GPU to run TIGRE\n");
+//            }
+//            cudaCheckErrors("Check mem error");
             
-            *mem_GPU_global=(memfree<*mem_GPU_global)?memfree:*mem_GPU_global;
-        }
-        *mem_GPU_global=(size_t)((double)*mem_GPU_global*0.95);
-        
-        //*mem_GPU_global= insert your known number here, in bytes.
+//            *mem_GPU_global=(memfree<*mem_GPU_global)?memfree:*mem_GPU_global;
+//        }
+//        *mem_GPU_global=(size_t)((double)*mem_GPU_global*0.95);
+	
+    *mem_GPU_global= 48000000000;
 }
