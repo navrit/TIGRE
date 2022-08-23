@@ -13,29 +13,20 @@ conda create -n tigre_env --file conda-package-list.txt
 
 import json
 import math
-import multiprocessing
 import os
-import sys
-
+from re import L
 
 import cv2
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
-import SimpleITK as sitk
-import tomopy
 # from __future__ import division
-from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
-from PIL import Image
-from scipy import interpolate
-from scipy.ndimage import median_filter
-from scipy.signal import medfilt2d
+from astropy.convolution import Gaussian2DKernel
 from skimage.registration import phase_cross_correlation
 from tqdm import trange, tqdm
 from typing import List
 from multiprocessing import freeze_support
 
-import tigre
 import tigre.algorithms as algs
 from tigre.utilities.geometry import Geometry
 
@@ -122,7 +113,8 @@ class ConeGeometryJasper(Geometry):
             self.offDetector = np.array((0, 0))                 # Offset of Detector            (mm)
             self.rotDetector = np.array((0, 0, 0))
             # Auxiliary
-            self.accuracy = 0.5                                 # Accuracy of FWD proj          (vx/sample)
+            # Accuracy of FWD proj          (vx/sample)
+            self.accuracy = 0.5
             # Mode
             self.mode = 'cone'                                  # parallel, cone'''
 
@@ -293,6 +285,32 @@ def files_exist(path: str, file_list: List[str]) -> bool:
     return True
 
 
+def save_and_or_load_npy_files(path: str, array_filename: str, generating_function):
+    p = os.path.join(path, array_filename)
+    if files_exist(path, array_filename):
+        print(f'Loading existing numpy file: {p}')
+        my_array = np.load()
+    else:
+        my_array = generating_function()
+        print(f'Saving numpy file: {p}')
+        np.save(p, my_array)
+    return my_array
+
+
+def generate_dac_values(gReconParams, open_mean_th0, th0_list, mean):
+    DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
+    for i in trange(0, open_mean_th0.shape[1]):
+        for j in range(0, open_mean_th0.shape[2]):
+            yvalues = open_mean_th0[:, i, j]
+            regressions, res, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
+            regression_out[:, i, j] = regressions
+            DAC = solve_for_y(regressions, mean)[1]
+            if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
+                DAC = th0_list[th]
+            DAC_values[i, j] = DAC
+    return DAC_values
+
+
 if __name__ == "__main__":
     freeze_support()  # needed for Windows - see https://stackoverflow.com/questions/63871662/python-multiprocessing-freeze-support-error
 
@@ -314,12 +332,13 @@ if __name__ == "__main__":
     gReconParams['z_stage_distance_mm'] = 20  # Varies between 0 and 100 mm
     gReconParams['distance_object_detector'] = 30 + \
         gReconParams['z_stage_distance_mm'] + 9+1.347  # (mm)
-    gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm) TODO Check accuracy!!!!!
+    gReconParams['detector_rotation'] = (
+        math.radians(-0.3), 0., 0.)  # (mm) TODO Check accuracy!!!!!
 
     drive = 'f:\\'
     # basefolder = os.path.join(drive,'jasper','data','20220726_scanseries')
     # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220819_ffpe_WhateverBreast')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_Al_Phantom_Recon_Alignment')
     base_json_file = os.path.join(base_folder, 'scan_settings.json')
     results_folder = os.path.join(base_folder, 'results_fillgap')
     if not os.path.exists(results_folder):
@@ -461,25 +480,16 @@ if __name__ == "__main__":
         )
         print(f'th = {th}, mean = {mean}')  # E.g. 36895.64768079413
         regression_out = np.zeros((3, gReconParams['pixels'], gReconParams['pixels']))
-        DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
 
         print('Finding best DAC values per pixel...')
-        for i in trange(0, open_mean_th0.shape[1]):
-            for j in range(0, open_mean_th0.shape[2]):
-                yvalues = open_mean_th0[:, i, j]
-                regressions, res, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
-                regression_out[:, i, j] = regressions
-                DAC = solve_for_y(regressions, mean)[1]
-                if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
-                    DAC = th0_list[th]
-                DAC_values[i, j] = DAC
-        # TODO Save array, load if it exists!
+        DAC_values = save_and_or_load_npy_files(
+            results_folder, f'th{th}_dac_values.npy', lambda: generate_dac_values(gReconParams, open_mean_th0, th0_list, mean))
 
         fit_array = spectral_projs_th0.reshape(spectral_projs_th0.shape[0], -1)
 
         print('Fitting polynomials... ~1 minute')
-        regressions, res, _, _, _ = np.polyfit(th0_list, fit_array, 2, full=True)
-        # TODO Save array, load if it exists!
+        regressions, _, _, _, _ = np.polyfit(th0_list, fit_array, 2, full=True)
+        # regressions = save_and_or_load_npy_files(results_folder, f'th{th}_regressions.npy', lambda: FILLMEIN(...))
 
         print('Calculating DACs...')
         calc_dacs = np.repeat(DAC_values[np.newaxis, :, :],
@@ -496,7 +506,6 @@ if __name__ == "__main__":
         # TODO Ask Jasper about this VERY SUSPICIOUS CODE
         # mean = (np.mean(projection_data[:, :, 0:10]) + np.mean(projection_data[:, :, 503:513]))/2
         ofc = -np.log(projection_data/1)
-        print(ofc.shape)
         save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
 
         print('Doing median filter on OFC data...')
@@ -511,12 +520,11 @@ if __name__ == "__main__":
         badmap[meanmap > 0.2] = 0
         badmap[stdmap > 0.05] = 0
         ofc_bpc = filereader.apply_badmap_to_projections(ofc, badmap)
-        print(ofc_bpc.shape)
         ofc_bpc_mf = filereader.median_filter_projection_set(ofc_bpc, 3)  # TODO THIS IS FUCKED
         if th == 0:
             # print(f'th = {th}, finding optimal offset')
             # (mm) # find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=25)
-            global_detector_shift_y = 0.25
+            global_detector_shift_y = 2.51
             print(f'global_detector_shift_y = {global_detector_shift_y} (mm)')
 
             ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
