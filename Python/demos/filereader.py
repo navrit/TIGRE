@@ -6,6 +6,7 @@ from scipy.ndimage import median_filter
 import json
 import multiprocessing
 from scipy.signal import medfilt2d
+from multiprocessing import freeze_support
 
 
 def load_projection(filepaths, badpixelcorr=True, medianfilter=False, fillgap=False):
@@ -64,6 +65,8 @@ def load_projection(filepaths, badpixelcorr=True, medianfilter=False, fillgap=Fa
 
 
 def projectionsloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, fillgap=False):
+    freeze_support()
+
     if os.path.exists(jsonfile):
         dirname = os.path.dirname(jsonfile)
         f = open(jsonfile)
@@ -87,16 +90,18 @@ def projectionsloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=Fal
                     projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         f.close()
-        pool = multiprocessing.Pool(60)
-        processes = [pool.apply_async(load_projection, args=(
-            x, badpixelcorr, medianfilter, fillgap)) for x in totalfilelist]
-        result = [p.get() for p in processes]
-        return np.asarray(result)
+        with multiprocessing.Pool(60) as pool:
+            processes = [pool.apply_async(load_projection, args=(
+                x, badpixelcorr, medianfilter, fillgap)) for x in totalfilelist]
+            result = [p.get() for p in processes]
+            return np.asarray(result)
     else:
         return None
 
 
 def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, fillgap=False):
+    freeze_support()
+
     if os.path.exists(jsonfile):
         dirname = os.path.dirname(jsonfile)
         f = open(jsonfile)
@@ -119,11 +124,11 @@ def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, 
                     projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         f.close()
-        pool = multiprocessing.Pool(60)
-        processes = [pool.apply_async(load_projection, args=(
-            x, badpixelcorr, medianfilter, fillgap)) for x in totalfilelist]
-        result = [p.get() for p in processes]
-        return np.asarray(result)
+        with multiprocessing.Pool(60) as pool:
+            processes = [pool.apply_async(load_projection, args=(
+                x, badpixelcorr, medianfilter, fillgap)) for x in totalfilelist]
+            result = [p.get() for p in processes]
+            return np.asarray(result)
     else:
         return None
 
@@ -194,15 +199,16 @@ def get_exposure_time_projection(jsonfile=''):
 
 
 def median_filter_projection_set(projections, kernelsize=5):
-    pool = multiprocessing.Pool(60)
-    processes = [pool.apply_async(median_filter_2D, args=(x, kernelsize)) for x in projections]
-    result = [p.get() for p in processes]
-    return np.asarray(result)
+    freeze_support()
+    with multiprocessing.Pool(60) as pool:
+        processes = [pool.apply_async(median_filter_2D, args=(x, kernelsize)) for x in projections]
+        result = [p.get() for p in processes]
+        return np.asarray(result)
 
-    lprojs = np.zeros_like(projections)
-    for i in range(0, projections.shape[0]):
-        lprojs[i, :, :] = medfilt2d(projections[i, :, :], kernelsize)
-    return (lprojs)
+    # lprojs = np.zeros_like(projections)
+    # for i in range(0, projections.shape[0]):
+    #     lprojs[i, :, :] = medfilt2d(projections[i, :, :], kernelsize)
+    # return (lprojs)
 
 
 def median_filter_2D(projection, kernelsize=5):
@@ -210,11 +216,14 @@ def median_filter_2D(projection, kernelsize=5):
 
 
 def apply_badmap_to_projections(projections, badmap):
-    pool = multiprocessing.Pool(60)
-    processes = [pool.apply_async(apply_badmap_to_projection, args=(x, badmap))
-                 for x in projections]
-    result = [p.get() for p in processes]
-    return np.asarray(result)
+    freeze_support()
+    with multiprocessing.Pool(60) as pool:
+        processes = [pool.apply_async(apply_badmap_to_projection, args=(x, badmap))
+                     for x in projections]
+        # for p in processes:
+        # print(p.get())
+        result = [p.get() for p in processes]
+        return np.asarray(result)
 
 
 def apply_badmap_to_projection(projection, badmap):
@@ -224,3 +233,8 @@ def apply_badmap_to_projection(projection, badmap):
     values = lproj[valid_mask]
     it = interpolate.NearestNDInterpolator(coords, values)
     return it(list(np.ndindex(lproj.shape))).reshape(lproj.shape)
+
+
+if __name__ == "__main__":
+    freeze_support()
+    print('You executed the wrong file LOL!!!! ')
