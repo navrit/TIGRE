@@ -407,27 +407,32 @@ if __name__ == "__main__":
     ofc_bpc = save_and_or_load_npy_files(
         output_folder, 'bpc.npy', lambda: generate_bad_pixel_corrected_array(ofc, gReconParams))
 
-    r = np.linspace(-1, 1, 21)
-    # unit = 'mm'
-    unit = 'degrees'
-    for i in trange(0, len(r)):
-        gReconParams['detector_rotation'] = (math.radians(
-            r[i]), 0., 0.)  # (mm) TODO Check accuracy!!!!!
-        # centre_of_rotation_offset_y_mm = r[i]
+    # r = np.linspace(-1, 1, 21)
+    # # unit = 'mm'
+    # unit = 'degrees'
+    # for i in trange(0, len(r)):
+    #     gReconParams['detector_rotation'] = (math.radians(
+    #         r[i]), 0., 0.)  # (mm) TODO Check accuracy!!!!!
+    #     # centre_of_rotation_offset_y_mm = r[i]
 
-        a = 400
-        img_th0 = recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles, z_offset,
-                             detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm, False)
+    #     # a = 400
+    #     # img_th0 = recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles, z_offset,
+    #     #                      detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm)
+
+    #     img_th0 = recon_scan(gReconParams, ofc_bpc[:, :, :], angles, z_offset,
+    #                          detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm)
 
         # ni_img = nib.Nifti1Image(img_th0, np.eye(4))
         # save_array(output_folder, f'Proj_th0_{r[i]}_{unit}.nii', ni_img)
 
-        b = 512//2
-        img = Image.fromarray(img_th0[:, :, b])
-        img.save(os.path.join(output_folder,
-                 '{:s}_{:0.4f}_{:s}.tiff'.format(str(i).zfill(6), r[i], unit)))
+        # b = 512//2
+        # img = Image.fromarray(img_th0[:, :, b])
+        # img.save(os.path.join(output_folder,
+        #          '{:s}_{:0.4f}_{:s}.tiff'.format(str(i).zfill(6), r[i], unit)))
 
-
+img_th0 = recon_scan(gReconParams, ofc_bpc[:, :, :], angles, z_offset, detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm)
+ni_img = nib.Nifti1Image(img_th0, np.eye(4))
+save_array(output_folder, 'Al_Phantom.nii', ni_img)
 # ni_img = nib.Nifti1Image(ofc_bpc, np.eye(4))
 # save_array(output_folder, f'Proj_ofc_bpc_{0}_{unit}.nii', ni_img)
 
