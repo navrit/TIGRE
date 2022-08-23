@@ -27,7 +27,7 @@ import os
 
 # import tifffile
 # import cv2
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 # import SimpleITK as sitk
@@ -333,6 +333,34 @@ def files_exist(path: str, file_list: List[str]) -> bool:
     return True
 
 
+def save_and_or_load_npy_files(path: str, array_filename: str, generating_function):
+    p = os.path.join(path, array_filename)
+    if os.path.exists(p):
+        print(f'Loading existing numpy file: {p}')
+        my_array = np.load(p)
+    else:
+        my_array = generating_function()
+        print(f'Saving numpy file: {p}')
+        np.save(p, my_array)
+    return my_array
+
+
+def generate_bad_pixel_corrected_array(ofc, gReconParams):
+    print('Doing median filter on OFC data...')
+    ofc_mf = filereader.median_filter_projection_set(ofc, 5)
+    diff_mf = np.abs(ofc-ofc_mf)
+    meanmap = np.mean(diff_mf, axis=0)
+    stdmap = np.std(diff_mf, axis=0)
+    badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
+    half = np.int32(badmap.shape[0]/2)
+    badmap[half-2:half+1] = 0
+    badmap[:, half-2:half+1] = 0
+    badmap[meanmap > 0.2] = 0
+    badmap[stdmap > 0.05] = 0
+    ofc_bpc = filereader.apply_badmap_to_projections(ofc, badmap)
+    return ofc_bpc
+
+
 if __name__ == "__main__":
     '''
     1. Load 1 dataset of projections + open field images
@@ -355,7 +383,7 @@ if __name__ == "__main__":
     open_mean_th0 = np.mean(spectral_open_th0, axis=1)
     open_mean_th0[0, :, :] = open_mean_th0[0, :, :]/exp_time[0]
     spectral_projs_th0[0, :, :, :] = spectral_projs_th0[0, :, :, :] / exp_time[0]
-    ofc = -np.log(spectral_projs_th0 / open_mean_th0)
+    ofc = -np.log(spectral_projs_th0[0, :, :, :] / open_mean_th0[0, :, :])
 
     # Make a list of globals for the reconstruction setting, and log them in a json file
     gReconParams = dict()
@@ -374,17 +402,37 @@ if __name__ == "__main__":
         gReconParams['z_stage_distance_mm'] + 9+1.347  # (mm)
     gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm)
 
-    global_detector_shift_y = 0.25  # (mm)
+    centre_of_rotation_offset_y_mm = 2.51  # (mm)
 
-    r = np.linspace(-1, 1, 100)
+    ofc_bpc = save_and_or_load_npy_files(
+        output_folder, 'bpc.npy', lambda: generate_bad_pixel_corrected_array(ofc, gReconParams))
+
+    r = np.linspace(-1, 1, 21)
+    # unit = 'mm'
     unit = 'degrees'
     for i in trange(0, len(r)):
         gReconParams['detector_rotation'] = (math.radians(
             r[i]), 0., 0.)  # (mm) TODO Check accuracy!!!!!
+        # centre_of_rotation_offset_y_mm = r[i]
 
-        img_th0 = recon_scan(gReconParams, ofc, angles, z_offset,
-                             detector_x_offsets, detector_y_offsets, global_detector_shift_y)
+        a = 400
+        img_th0 = recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles, z_offset,
+                             detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm, False)
 
-        img = Image.fromarray(img_th0[:, :, 100])
-        dst = os.path.join(output_folder, f'{r[i]}_{unit}.tiff')
-        img.save(dst)
+        # ni_img = nib.Nifti1Image(img_th0, np.eye(4))
+        # save_array(output_folder, f'Proj_th0_{r[i]}_{unit}.nii', ni_img)
+
+        b = 512//2
+        img = Image.fromarray(img_th0[:, :, b])
+        img.save(os.path.join(output_folder,
+                 '{:s}_{:0.4f}_{:s}.tiff'.format(str(i).zfill(6), r[i], unit)))
+
+
+# ni_img = nib.Nifti1Image(ofc_bpc, np.eye(4))
+# save_array(output_folder, f'Proj_ofc_bpc_{0}_{unit}.nii', ni_img)
+
+# img_th0 = recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
+#                         detector_y_offsets, global_detector_shift_y)
+
+# ni_img = nib.Nifti1Image(img_th0, np.eye(4))
+# save_array(output_folder, f'Proj_th0_{0}_{unit}.nii', ni_img)
