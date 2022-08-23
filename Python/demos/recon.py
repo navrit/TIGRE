@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[5]:
-
 
 '''
 Windows: Open Anaconda prompt
@@ -18,7 +16,6 @@ import math
 import multiprocessing
 import os
 import sys
-from __future__ import division
 
 
 import cv2
@@ -27,6 +24,7 @@ import nibabel as nib
 import numpy as np
 import SimpleITK as sitk
 import tomopy
+# from __future__ import division
 from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
 from PIL import Image
 from scipy import interpolate
@@ -35,6 +33,7 @@ from scipy.signal import medfilt2d
 from skimage.registration import phase_cross_correlation
 from tqdm import trange, tqdm
 from typing import List
+from multiprocessing import freeze_support
 
 import tigre
 import tigre.algorithms as algs
@@ -43,22 +42,6 @@ from tigre.utilities.geometry import Geometry
 import filereader
 
 kernel = Gaussian2DKernel(x_stddev=2)
-
-# Make a list of globals for the reconstruction setting, and log them in a json file
-gReconParams = dict()
-
-gReconParams['pixels'] = 512  # (pixels)
-gReconParams['pixel_pitch'] = 0.055  # (mm)
-gReconParams['fill_gap'] = True
-gReconParams['median_filter'] = False
-gReconParams['bad_pixel_correction'] = True
-gReconParams['recon_voxels'] = (gReconParams['pixels'], gReconParams['pixels'], gReconParams['pixels'])  # number of voxels (vx)
-gReconParams['recon_size'] = (gReconParams['pixels'] * gReconParams['pixel_pitch'], gReconParams['pixels'] * gReconParams['pixel_pitch'], gReconParams['pixels'] * gReconParams['pixel_pitch'])  # (mm)
-
-''' TODO These should really be read from the JSON file! '''
-gReconParams['distance_source_detector'] = 188.347 # 9+9+30+100+30+9+1.347 (mm)
-gReconParams['distance_object_detector'] = 30+ 20 +9+1.347 # (mm)
-gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm) TODO Check accuracy!!!!!
 
 
 class ConeGeometryJasper(Geometry):
@@ -110,7 +93,8 @@ class ConeGeometryJasper(Geometry):
         # Offset of image from origin   (mm)
         self.offOrigin = np.array((0, 0, 0))
         self.offDetector = np.array((0, 0))                     # Offset of Detector            (mm)
-        self.rotDetector = rotDetector                          # Detector rotation             (radians)
+        # Detector rotation             (radians)
+        self.rotDetector = rotDetector
         # Image parameters
         self.dVoxel = self.sVoxel / self.nVoxel                 # size of each voxel            (mm)
         # Auxiliary
@@ -151,7 +135,7 @@ def solve_for_y(poly_coeffs, y):
 
 def find_optimal_offset(gReconParams: dict, projections, angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=70):
     ''' TODO Replace this! It does not work
-    
+
     This function takes quite a while, which can probably be optimized.
     On the other hand, we only have to do this once per scan setup, and then store the value for later use.
     '''
@@ -183,11 +167,12 @@ def find_optimal_offset(gReconParams: dict, projections, angles, detector_x_offs
 
     for i in trange(int(estimate*100) - search_range, int(estimate*100) + search_range, 1):
         # note that the detector x and y axis are opposite the x and y coordinate system of the geometry
-        geom.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+(i/100) * gReconParams['pixel_pitch'])).T
+        geom.offDetector = np.vstack(
+            (detector_y_offsets, detector_x_offsets+(i/100) * gReconParams['pixel_pitch'])).T
         geom.rotDetector = np.array(gReconParams['detector_rotation'])
         geom.DSD = gReconParams['distance_source_detector']
         # stageoffset = 0
-        geom.DSO = geom.DSD - gReconParams['distance_object_detector'] # - stageoffset
+        geom.DSO = geom.DSD - gReconParams['distance_object_detector']  # - stageoffset
 
         imgfdk = algs.fdk(projections_small, geom, angles)
         im = imgfdk[0, :, :].astype(np.float32)
@@ -288,7 +273,7 @@ def recon_scan_fista(gReconParams: dict, projections, angles, sample_z_offset, d
 
 def save_array(path: str, filename: str, array: np.ndarray):
     s = os.path.join(path, filename)
-    
+
     if (isinstance(array, np.ndarray)):
         print(f'Saving Numpy array file: {s}')
         np.save(s, array)
@@ -299,27 +284,7 @@ def save_array(path: str, filename: str, array: np.ndarray):
         print('Array type supported in save_array, add it!?')
 
 
-# In[2]:
-
-
-drive = 'f:\\'
-# basefolder = os.path.join(drive,'jasper','data','20220726_scanseries')
-# base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
-base_folder = os.path.join(drive, 'jasper', 'data', '20220818_ffpe_WhateverBreast')
-base_json_file = os.path.join(base_folder, 'scan_settings.json')
-results_folder = os.path.join(base_folder, 'results_fillgap')
-if not os.path.exists(results_folder):
-    os.makedirs(results_folder)
-
-
-# In[3]:
-
-
-''' Load tiff files, transform a bit and save to numpy files.
-Load the files if they exist already '''
-
-
-def files_exist(path:str, file_list:List[str]) -> bool:
+def files_exist(path: str, file_list: List[str]) -> bool:
     ''' If a file does not exist or is less than the threshold, return False '''
     for f in file_list:
         full_path = os.path.join(path, f)
@@ -327,228 +292,244 @@ def files_exist(path:str, file_list:List[str]) -> bool:
             return False
     return True
 
-if os.path.exists(base_json_file):
-    f = open(base_json_file)
-    dashboard = json.load(f)
-    exp_time = []
-    th0_list = []
-    th1_list = []
 
-    numpy_output_files = ['projs_stack_th0.npy', 'open_stack_th0.npy',
-                          'projs_stack_th1.npy', 'open_stack_th1.npy', 'thlist_th0.npy', 'thlist_th1.npy']
-    if files_exist(results_folder, numpy_output_files):
-        print('Loading existing numpy files, should take ~7.5 seconds')
+if __name__ == "__main__":
+    freeze_support()  # needed for Windows - see https://stackoverflow.com/questions/63871662/python-multiprocessing-freeze-support-error
 
-        spectral_projs_th0 = np.load(os.path.join(results_folder, numpy_output_files[0]))
-        spectral_open_th0 = np.load(os.path.join(results_folder, numpy_output_files[1]))
-        spectral_projs_th1 = np.load(os.path.join(results_folder, numpy_output_files[2]))
-        spectral_open_th1 = np.load(os.path.join(results_folder, numpy_output_files[3]))
-        th0_list = np.load(os.path.join(results_folder, numpy_output_files[4]))
-        th1_list = np.load(os.path.join(results_folder, numpy_output_files[5]))
+    # Make a list of globals for the reconstruction setting, and log them in a json file
+    gReconParams = dict()
 
-        for i in tqdm(dashboard['thresholdscan']):
-            scan_folder = os.path.join(base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
-            scan_json = os.path.join(scan_folder, dashboard['thresholdscan'][i]['projections_json'])
-            open_image_folder = scan_folder
-            open_image_json = scan_json
-            folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
-            
-            th0_keV = folder_string[0:folder_string.find('_')]
-            th1_keV = folder_string[folder_string.find('_')+1:]
+    gReconParams['pixels'] = 512  # (pixels)
+    gReconParams['pixel_pitch'] = 0.055  # (mm)
+    gReconParams['fill_gap'] = True
+    gReconParams['median_filter'] = False
+    gReconParams['bad_pixel_correction'] = True
+    gReconParams['recon_voxels'] = (gReconParams['pixels'], gReconParams['pixels'],
+                                    gReconParams['pixels'])  # number of voxels (vx)
+    gReconParams['recon_size'] = (gReconParams['pixels'] * gReconParams['pixel_pitch'], gReconParams['pixels']
+                                  * gReconParams['pixel_pitch'], gReconParams['pixels'] * gReconParams['pixel_pitch'])  # (mm)
 
-            angles = filereader.get_proj_angles(scan_json)
-            z_offset = filereader.get_samplestage_z_offset(scan_json)
-            detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
-            exp_time.append(filereader.get_exposure_time_projection(scan_json))
-        exp_time = np.asarray(exp_time)
+    ''' TODO These should really be read from the JSON file! '''
+    gReconParams['distance_source_detector'] = 188.347  # 9+9+30+100+30+9+1.347 (mm)
+    gReconParams['z_stage_distance_mm'] = 20  # Varies between 0 and 100 mm
+    gReconParams['distance_object_detector'] = 30 + \
+        gReconParams['z_stage_distance_mm'] + 9+1.347  # (mm)
+    gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm) TODO Check accuracy!!!!!
 
-    else:
-        print(f'Making new numpy files, should take ~4.5 minutes. At least one file was missing :( ')
-        
-        spectral_projs_th0 = []
-        spectral_open_th0 = []
-        spectral_projs_th1 = []
-        spectral_open_th1 = []
+    drive = 'f:\\'
+    # basefolder = os.path.join(drive,'jasper','data','20220726_scanseries')
+    # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220819_ffpe_WhateverBreast')
+    base_json_file = os.path.join(base_folder, 'scan_settings.json')
+    results_folder = os.path.join(base_folder, 'results_fillgap')
+    if not os.path.exists(results_folder):
+        os.makedirs(results_folder)
+
+    ''' Load tiff files, transform a bit and save to numpy files.
+    Load the files if they exist already '''
+
+    if os.path.exists(base_json_file):
+        f = open(base_json_file)
+        dashboard = json.load(f)
+        exp_time = []
         th0_list = []
         th1_list = []
-        th1_exp_time = []
-        for i in tqdm(dashboard['thresholdscan']):
-            scan_folder = os.path.join(
-                base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
-            scan_json = os.path.join(scan_folder, dashboard['thresholdscan'][i]['projections_json'])
-            open_image_folder = scan_folder
-            open_image_json = scan_json
-            folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
-            th0_keV = folder_string[0:folder_string.find('_')]
-            th1_keV = folder_string[folder_string.find('_')+1:]
-            exp_time.append(filereader.get_exposure_time_projection(scan_json))
-            th0_list.append(float(th0_keV))
-            th1_list.append(float(th1_keV))
 
-            projs_th0 = filereader.projectionsloader(
-                scan_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-            openimg_th0 = filereader.openimgloader(
-                open_image_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-            projs_th1 = filereader.projectionsloader(
-                scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-            openimg_th1 = filereader.openimgloader(
-                open_image_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-            spectral_projs_th0.append(projs_th0)
-            spectral_open_th0.append(openimg_th0)
-            spectral_projs_th1.append(projs_th1)
-            spectral_open_th1.append(openimg_th1)
-            detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
-            angles = filereader.get_proj_angles(scan_json)
-            z_offset = filereader.get_samplestage_z_offset(scan_json)
-        spectral_projs_th0 = np.asarray(spectral_projs_th0)
-        spectral_open_th0 = np.asarray(spectral_open_th0)
-        spectral_projs_th1 = np.asarray(spectral_projs_th1)
-        spectral_open_th1 = np.asarray(spectral_open_th1)
-        exp_time = np.asarray(exp_time)
-        th0_list = np.asarray(th0_list)
-        th1_list = np.asarray(th1_list)
+        numpy_output_files = ['projs_stack_th0.npy', 'open_stack_th0.npy',
+                              'projs_stack_th1.npy', 'open_stack_th1.npy', 'thlist_th0.npy', 'thlist_th1.npy']
+        if files_exist(results_folder, numpy_output_files):
+            print('Loading existing numpy files, should take ~7.5 seconds')
 
-        np.save(os.path.join(results_folder, 'projs_stack_th0.npy'), spectral_projs_th0)
-        np.save(os.path.join(results_folder, 'open_stack_th0.npy'), spectral_open_th0)
-        np.save(os.path.join(results_folder, 'projs_stack_th1.npy'), spectral_projs_th1)
-        np.save(os.path.join(results_folder, 'open_stack_th1.npy'), spectral_open_th1)
-        np.save(os.path.join(results_folder, 'thlist_th0.npy'), th0_list)
-        np.save(os.path.join(results_folder, 'thlist_th1.npy'), th1_list)
+            spectral_projs_th0 = np.load(os.path.join(results_folder, numpy_output_files[0]))
+            spectral_open_th0 = np.load(os.path.join(results_folder, numpy_output_files[1]))
+            spectral_projs_th1 = np.load(os.path.join(results_folder, numpy_output_files[2]))
+            spectral_open_th1 = np.load(os.path.join(results_folder, numpy_output_files[3]))
+            th0_list = np.load(os.path.join(results_folder, numpy_output_files[4]))
+            th1_list = np.load(os.path.join(results_folder, numpy_output_files[5]))
 
-        # print(spectralprojs.shape, spectralopen.shape)
-        # out = np.load(os.path.join(basefolder,'Projections_fitted.npy'))
-        # openout = np.load(os.path.join(basefolder,'Projections_open_fitted.npy'))
+            for i in tqdm(dashboard['thresholdscan']):
+                scan_folder = os.path.join(
+                    base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
+                scan_json = os.path.join(
+                    scan_folder, dashboard['thresholdscan'][i]['projections_json'])
+                open_image_folder = scan_folder
+                open_image_json = scan_json
+                folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
 
+                th0_keV = folder_string[0:folder_string.find('_')]
+                th1_keV = folder_string[folder_string.find('_')+1:]
 
-# In[6]:
+                angles = filereader.get_proj_angles(scan_json)
+                z_offset = filereader.get_samplestage_z_offset(scan_json)
+                detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
+                exp_time.append(filereader.get_exposure_time_projection(scan_json))
+            exp_time = np.asarray(exp_time)
 
+        else:
+            print(f'Making new numpy files, should take ~4.5 minutes. At least one file was missing :( ')
 
-# print(spectral_projs_th0.shape)
+            spectral_projs_th0 = []
+            spectral_open_th0 = []
+            spectral_projs_th1 = []
+            spectral_open_th1 = []
+            th0_list = []
+            th1_list = []
+            th1_exp_time = []
+            for i in tqdm(dashboard['thresholdscan']):
+                scan_folder = os.path.join(
+                    base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
+                scan_json = os.path.join(
+                    scan_folder, dashboard['thresholdscan'][i]['projections_json'])
+                open_image_folder = scan_folder
+                open_image_json = scan_json
+                folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
+                th0_keV = folder_string[0:folder_string.find('_')]
+                th1_keV = folder_string[folder_string.find('_')+1:]
+                exp_time.append(filereader.get_exposure_time_projection(scan_json))
+                th0_list.append(float(th0_keV))
+                th1_list.append(float(th1_keV))
 
-# _global_detector_shift_y = find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=20)
-# print(_global_detector_shift_y)
-# global_detector_shift_y=0.12
+                projs_th0 = filereader.projectionsloader(
+                    scan_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                openimg_th0 = filereader.openimgloader(
+                    open_image_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                projs_th1 = filereader.projectionsloader(
+                    scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                openimg_th1 = filereader.openimgloader(
+                    open_image_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                spectral_projs_th0.append(projs_th0)
+                spectral_open_th0.append(openimg_th0)
+                spectral_projs_th1.append(projs_th1)
+                spectral_open_th1.append(openimg_th1)
+                detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
+                angles = filereader.get_proj_angles(scan_json)
+                z_offset = filereader.get_samplestage_z_offset(scan_json)
+            spectral_projs_th0 = np.asarray(spectral_projs_th0)
+            spectral_open_th0 = np.asarray(spectral_open_th0)
+            spectral_projs_th1 = np.asarray(spectral_projs_th1)
+            spectral_open_th1 = np.asarray(spectral_open_th1)
+            exp_time = np.asarray(exp_time)
+            th0_list = np.asarray(th0_list)
+            th1_list = np.asarray(th1_list)
 
+            np.save(os.path.join(results_folder, 'projs_stack_th0.npy'), spectral_projs_th0)
+            np.save(os.path.join(results_folder, 'open_stack_th0.npy'), spectral_open_th0)
+            np.save(os.path.join(results_folder, 'projs_stack_th1.npy'), spectral_projs_th1)
+            np.save(os.path.join(results_folder, 'open_stack_th1.npy'), spectral_open_th1)
+            np.save(os.path.join(results_folder, 'thlist_th0.npy'), th0_list)
+            np.save(os.path.join(results_folder, 'thlist_th1.npy'), th1_list)
 
-# In[7]:
+            # print(spectralprojs.shape, spectralopen.shape)
+            # out = np.load(os.path.join(basefolder,'Projections_fitted.npy'))
+            # openout = np.load(os.path.join(basefolder,'Projections_open_fitted.npy'))
 
+    # print(spectral_projs_th0.shape)
 
-# print(f'global_detector_shift_x = {global_detector_shift_x}')
-# print(f'global_detector_shift_y = {global_detector_shift_y}')
-print(spectral_open_th0.shape)  # E.g. (9, 32, 512, 512) (Thresholds, # of open images, pixels, pixels)
+    # _global_detector_shift_y = find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=20)
+    # print(_global_detector_shift_y)
+    # global_detector_shift_y=0.12
 
-open_mean_th0 = np.mean(spectral_open_th0, axis=1)
-open_mean_th1 = np.mean(spectral_open_th1, axis=1)
+    # print(f'global_detector_shift_x = {global_detector_shift_x}')
+    # print(f'global_detector_shift_y = {global_detector_shift_y}')
+    # E.g. (9, 32, 512, 512) (Thresholds, # of open images, pixels, pixels)
+    print(spectral_open_th0.shape)
 
-for i in range(open_mean_th0.shape[0]):
-    # print(i, open_mean_th0.shape, open_mean_th0.shape[0])  # E.g. 0 (9, 512, 512) 9
-    open_mean_th0[i, :, :] = open_mean_th0[i, :, :]/exp_time[i]
-    open_mean_th1[i, :, :] = open_mean_th1[i, :, :]/exp_time[i]
+    open_mean_th0 = np.mean(spectral_open_th0, axis=1)
+    open_mean_th1 = np.mean(spectral_open_th1, axis=1)
 
-for i in range(spectral_projs_th0.shape[0]):
-    spectral_projs_th0[i, :, :, :] = spectral_projs_th0[i, :, :, :] / exp_time[i]
-    spectral_projs_th1[i, :, :, :] = spectral_projs_th1[i, :, :, :] / exp_time[i]
+    for i in range(open_mean_th0.shape[0]):
+        # print(i, open_mean_th0.shape, open_mean_th0.shape[0])  # E.g. 0 (9, 512, 512) 9
+        open_mean_th0[i, :, :] = open_mean_th0[i, :, :]/exp_time[i]
+        open_mean_th1[i, :, :] = open_mean_th1[i, :, :]/exp_time[i]
 
-# global_detector_shift_y = -0.31872500000000004
+    for i in range(spectral_projs_th0.shape[0]):
+        spectral_projs_th0[i, :, :, :] = spectral_projs_th0[i, :, :, :] / exp_time[i]
+        spectral_projs_th1[i, :, :, :] = spectral_projs_th1[i, :, :, :] / exp_time[i]
 
-for th in range(0, open_mean_th0.shape[0]):
-    a0 = 0
-    a1 = (gReconParams['pixels'] // 2) - 1 # 255 for 512 pixels
-    a2 = (gReconParams['pixels'] // 2) + 1 # 257 for 512 pixels
-    a3 = gReconParams['pixels']
-    mean = 0.25 * (
-            np.mean(open_mean_th0[th, a0:a1, a0:a1]) +
-            np.mean(open_mean_th0[th, a0:a1, a2:a3]) +
-            np.mean(open_mean_th0[th, a2:a3, a0:a1]) +
-            np.mean(open_mean_th0[th, a2:a3, a2:a3])
-    )
-    print(f'th = {th}, mean = {mean}')  # E.g. 36895.64768079413
-    regression_out = np.zeros((3, gReconParams['pixels'], gReconParams['pixels']))
-    DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
+    # global_detector_shift_y = -0.31872500000000004
 
-    print('Finding best DAC values per pixel...')
-    for i in trange(0, open_mean_th0.shape[1]):
-        for j in range(0, open_mean_th0.shape[2]):
-            yvalues = open_mean_th0[:, i, j]
-            regressions, res, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
-            regression_out[:, i, j] = regressions
-            DAC = solve_for_y(regressions, mean)[1]
-            if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
-                DAC = th0_list[th]
-            DAC_values[i, j] = DAC
-    
-    fit_array = spectral_projs_th0.reshape(spectral_projs_th0.shape[0], -1)
+    for th in range(0, open_mean_th0.shape[0]):
+        a0 = 0
+        a1 = (gReconParams['pixels'] // 2) - 1  # 255 for 512 pixels
+        a2 = (gReconParams['pixels'] // 2) + 1  # 257 for 512 pixels
+        a3 = gReconParams['pixels']
+        mean = 0.25 * (
+            np.mean(open_mean_th0[th, a0:a1, a0:a1])
+            + np.mean(open_mean_th0[th, a0:a1, a2:a3])
+            + np.mean(open_mean_th0[th, a2:a3, a0:a1])
+            + np.mean(open_mean_th0[th, a2:a3, a2:a3])
+        )
+        print(f'th = {th}, mean = {mean}')  # E.g. 36895.64768079413
+        regression_out = np.zeros((3, gReconParams['pixels'], gReconParams['pixels']))
+        DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
 
-    print('Fitting polynomials... ~1 minute')
-    regressions, res, _, _, _ = np.polyfit(th0_list, fit_array, 2, full=True)
+        print('Finding best DAC values per pixel...')
+        for i in trange(0, open_mean_th0.shape[1]):
+            for j in range(0, open_mean_th0.shape[2]):
+                yvalues = open_mean_th0[:, i, j]
+                regressions, res, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
+                regression_out[:, i, j] = regressions
+                DAC = solve_for_y(regressions, mean)[1]
+                if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
+                    DAC = th0_list[th]
+                DAC_values[i, j] = DAC
+        # TODO Save array, load if it exists!
 
-    print('Calculating DACs...')
-    calc_dacs = np.repeat(DAC_values[np.newaxis, :, :], spectral_projs_th0.shape[1], axis=0).flatten()
+        fit_array = spectral_projs_th0.reshape(spectral_projs_th0.shape[0], -1)
 
-    print('Calculating projection data...')
-    proj_data_flat = (regressions[0, :]*calc_dacs**2) + \
-        (regressions[1, :]*calc_dacs**1) + regressions[2, :]
-    projection_data = proj_data_flat.reshape(
-        spectral_projs_th0.shape[1], spectral_projs_th0.shape[2], spectral_projs_th0.shape[3])
-    save_array(results_folder, 'Projections_th0_' + str(th0_list[th])+'_keV.npy', projection_data)
-    
-    # TODO Ask Jasper about this VERY SUSPICIOUS CODE
-    mean = (np.mean(projection_data[:, :, 0:10]) + np.mean(projection_data[:, :, 503:513]))/2
-    ofc = -np.log(projection_data/mean)
-    save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
+        print('Fitting polynomials... ~1 minute')
+        regressions, res, _, _, _ = np.polyfit(th0_list, fit_array, 2, full=True)
+        # TODO Save array, load if it exists!
 
-    print('Doing median filter on OFC data...')
-    ofc_mf = filereader.median_filter_projection_set(ofc, 5)
-    diff_mf = np.abs(ofc-ofc_mf)
-    meanmap = np.mean(diff_mf, axis=0)
-    stdmap = np.std(diff_mf, axis=0)
-    badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
-    half = np.int32(badmap.shape[0]/2)
-    badmap[half-2:half+1] = 0
-    badmap[:, half-2:half+1] = 0
-    badmap[meanmap > 0.2] = 0
-    badmap[stdmap > 0.05] = 0
-    ofc_bpc = filereader.apply_badmap_to_projections(ofc, badmap)
-    ofc_bpc_mf = filereader.median_filter_projection_set(ofc_bpc, 3)
-    if th == 0:
-        # print(f'th = {th}, finding optimal offset')
-        global_detector_shift_y = 0.25 # (mm) # find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=25)
-        print(f'global_detector_shift_y = {global_detector_shift_y} (mm)')
-        
-        ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
-        save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
-    
-    print('Doing recon finally!')
-    img_th0 = recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
-                         detector_y_offsets, global_detector_shift_y)
-    
-    ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-    save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
+        print('Calculating DACs...')
+        calc_dacs = np.repeat(DAC_values[np.newaxis, :, :],
+                              spectral_projs_th0.shape[1], axis=0).flatten()
 
-    img_th0 = recon_scan(gReconParams, ofc_bpc_mf, angles, z_offset, detector_x_offsets,
-                         detector_y_offsets, global_detector_shift_y)
-    ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-    save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
+        print('Calculating projection data...')
+        proj_data_flat = (regressions[0, :]*calc_dacs**2) + \
+            (regressions[1, :]*calc_dacs**1) + regressions[2, :]
+        projection_data = proj_data_flat.reshape(
+            spectral_projs_th0.shape[1], spectral_projs_th0.shape[2], spectral_projs_th0.shape[3])
+        save_array(results_folder, 'Projections_th0_'
+                   + str(th0_list[th])+'_keV.npy', projection_data)
 
+        # TODO Ask Jasper about this VERY SUSPICIOUS CODE
+        # mean = (np.mean(projection_data[:, :, 0:10]) + np.mean(projection_data[:, :, 503:513]))/2
+        ofc = -np.log(projection_data/1)
+        print(ofc.shape)
+        save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
 
-# In[ ]:
+        print('Doing median filter on OFC data...')
+        ofc_mf = filereader.median_filter_projection_set(ofc, 5)
+        diff_mf = np.abs(ofc-ofc_mf)
+        meanmap = np.mean(diff_mf, axis=0)
+        stdmap = np.std(diff_mf, axis=0)
+        badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
+        half = np.int32(badmap.shape[0]/2)
+        badmap[half-2:half+1] = 0
+        badmap[:, half-2:half+1] = 0
+        badmap[meanmap > 0.2] = 0
+        badmap[stdmap > 0.05] = 0
+        ofc_bpc = filereader.apply_badmap_to_projections(ofc, badmap)
+        print(ofc_bpc.shape)
+        ofc_bpc_mf = filereader.median_filter_projection_set(ofc_bpc, 3)  # TODO THIS IS FUCKED
+        if th == 0:
+            # print(f'th = {th}, finding optimal offset')
+            # (mm) # find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=25)
+            global_detector_shift_y = 0.25
+            print(f'global_detector_shift_y = {global_detector_shift_y} (mm)')
 
+            ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
+            save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
 
-# print(f'th = {th}, finding optimal offset')
-# global_detector_shift_y = .2 #find_optimal_offset(spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stageoffset=0, searchrange=25)
-# print(f'global_detector_shift_y = {global_detector_shift_y} (mm)')
+        print('Doing recon finally!')
+        img_th0 = recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
+                             detector_y_offsets, global_detector_shift_y)
 
-# ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
-# save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
+        ni_img = nib.Nifti1Image(img_th0, np.eye(4))
+        save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
 
-# print('Doing recon finally!')
-# img_th0 = recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
-#                     detector_y_offsets, global_detector_shift_y)
-
-# ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-# save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
-
-# img_th0 = recon_scan(gReconParams, ofc_bpc_mf, angles, z_offset, detector_x_offsets,
-#                     detector_y_offsets, global_detector_shift_y)
-# ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-# save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
+        img_th0 = recon_scan(gReconParams, ofc_bpc_mf, angles, z_offset, detector_x_offsets,
+                             detector_y_offsets, global_detector_shift_y)
+        ni_img = nib.Nifti1Image(img_th0, np.eye(4))
+        save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
