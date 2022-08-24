@@ -139,6 +139,24 @@ def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, 
         return None
 
 
+def get_sample_z_from_first_scan_json(json_file_full_path: str) -> float:
+    if os.path.exists(json_file_full_path):
+        with open(json_file_full_path) as f:
+            j = json.load(f)
+
+            base_path = os.path.dirname(json_file_full_path)
+            projections_folder = j["thresholdscan"]["0000"]["projectionsfolder"]
+            projections_json = j["thresholdscan"]["0000"]["projections_json"]
+            sub_json = os.path.join(base_path, projections_folder, projections_json)
+
+            if os.path.exists(sub_json):
+                with open(sub_json) as f:
+                    j = json.load(f)
+                    return j['projections']["0000"]['sample_z']
+    else:
+        return None
+
+
 def get_proj_angles(jsonfile=''):
     if os.path.exists(jsonfile):
         f = open(jsonfile)
@@ -239,7 +257,7 @@ def apply_badmap_to_projection(projection, badmap):
     return it(list(np.ndindex(lproj.shape))).reshape(lproj.shape)
 
 
-class ConeGeometryJasper(Geometry):
+class ConeGeometryJasper2(Geometry):
     ''' Some of these parameters are overwritten with better values in the recon_scan functions '''
 
     def __init__(self, gReconParams: dict, high_quality: bool = True, nVoxel=None):
@@ -251,12 +269,14 @@ class ConeGeometryJasper(Geometry):
         DOD = gReconParams['distance_object_detector']
         rotDetector = gReconParams['detector_rotation']
 
-        total_detector_size_mm = pixels * pixel_pitch_mm
+        total_detector_size_mm = pixels * pixel_pitch_mm  # 512 * 0.055 mm = 28.16 mm
 
         # VARIABLE                                                DESCRIPTION                   UNITS
         # ------------------------------------------------------------------------------------------------
         if high_quality:
             self.nDetector = np.array((pixels, pixels))         # number of pixels              (px)
+
+            ''' nVoxel and sVoxel are overwritten later... '''
             self.nVoxel = np.array((pixels, pixels, pixels))    # number of voxels              (vx)
             self.sVoxel = np.array((total_detector_size_mm,
                                     total_detector_size_mm,
@@ -265,14 +285,15 @@ class ConeGeometryJasper(Geometry):
             number_of_voxels = 1
             number_of_pixels = 11
 
+            ''' nVoxel and sVoxel are overwritten later... '''
             self.nDetector = np.array((number_of_pixels,
                                        pixels))                # number of pixels              (px)
             self.nVoxel = np.array((number_of_voxels,
-                                    pixels,
-                                    pixels))                    # number of voxels              (vx)
-            self.sVoxel = np.array((pixel_pitch_mm,
-                                    pixels * pixel_pitch_mm,
-                                    pixels * pixel_pitch_mm))    # total size of the image       (mm)
+                                    number_of_pixels,
+                                    number_of_pixels))                    # number of voxels              (vx)
+            self.sVoxel = np.array((number_of_voxels,
+                                    number_of_pixels,
+                                    number_of_pixels))    # total size of the image       (mm)
 
         ''' We will set the common variables last because other variables depend on some of them '''
         # VARIABLE                                                DESCRIPTION                   UNITS
@@ -280,8 +301,9 @@ class ConeGeometryJasper(Geometry):
         self.DSD = DSD                                          # Distance Source Detector      (mm)
         self.DSO = DSD - DOD                                    # Distance Source Origin        (mm)
         # Detector parameters
+        # *2 because of the pixel geometry definition probably
         self.dDetector = np.array((pixel_pitch_mm,
-                                   pixel_pitch_mm))             # size of each pixel            (mm)
+                                   pixel_pitch_mm))           # size of each pixel            (mm)
         self.sDetector = self.nDetector * self.dDetector        # total size of the detector    (mm)
 
         # Offsets
@@ -388,30 +410,39 @@ def solve_for_y(poly_coeffs, y):
 #     return (opt_shift/100) * gReconParams['pixel_pitch']
 
 
-def recon_scan(gReconParams: dict, projections, angles, sample_z_offset, detector_x_offsets, detector_y_offsets, global_detector_shift_y, high_quality=True):
+def make_Nifti1Image(array, voxel_size: float):
+    img = nib.Nifti1Image(array, np.eye(4))
+    img.header['pixdim'][1:4] = voxel_size
+    return img
+
+
+def recon_scan(gReconParams: dict, projections, angles, detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, high_quality=True):
     # sample_z_offset --> 0 - 100 mm
 
-    geo = ConeGeometryJasper(gReconParams, high_quality=high_quality)
-    geo.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+global_detector_shift_y)).T
-    geo.rotDetector = np.array(gReconParams['detector_rotation'])
-    geo.DSD = gReconParams['distance_source_detector']
-    geo.DSO = geo.DSD - gReconParams['distance_object_detector'] - sample_z_offset
+    geometry = ConeGeometryJasper2(gReconParams, high_quality=high_quality)
+    geometry.offDetector = np.vstack(
+        (detector_y_offsets + centre_of_rotation_offset_y_mm, detector_x_offsets + centre_of_rotation_offset_x_mm)).T
+    geometry.rotDetector = np.array(gReconParams['detector_rotation'])
+    geometry.DSD = gReconParams['distance_source_detector']
+    geometry.DSO = geometry.DSD - gReconParams['distance_object_detector']
 
     # number of voxels              (vx)
-    geo.nVoxel = np.array(gReconParams['recon_voxels'])
-    geo.sVoxel = np.array(gReconParams['recon_size'])          # total size of the image       (mm)
-    geo.dVoxel = geo.sVoxel/geo.nVoxel                 # size of each voxel            (mm)
-    geo.offOrigin = np.array((0, 0, 0))
+    geometry.nVoxel = np.array(gReconParams['recon_voxels'])
+    # total size of the image       (mm)
+    geometry.sVoxel = np.array(gReconParams['recon_size'])
+    # size of each voxel            (mm)
+    geometry.dVoxel = geometry.sVoxel/geometry.nVoxel
+    geometry.offOrigin = np.array((0, 0, 0))
 
-    imgfdk = algs.fdk(projections, geo, angles, filter='cosine')
+    imgfdk = algs.fdk(projections, geometry, angles, filter='cosine')
     imgfdk[imgfdk < 0] = 0
-    imgfdkint = (imgfdk*10000).astype(np.int32)
+    img = (imgfdk*10000).astype(np.int32)
 
-    imgfdkint = np.swapaxes(imgfdkint, 1, 2)
-    imgfdkint = np.swapaxes(imgfdkint, 0, 2)
-    imgfdkint = np.flip(imgfdkint, 2)
+    img = np.swapaxes(img, 1, 2)
+    img = np.swapaxes(img, 0, 2)
+    img = np.flip(img, 2)
 
-    return imgfdkint
+    return img, geometry
 
 
 def save_array(path: str, filename: str, array: np.ndarray):
