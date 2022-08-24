@@ -4,7 +4,7 @@
 
 '''
 Windows: Open Anaconda prompt
-conda create --name tigre_env -c anaconda -c ccpi -c conda-forge  python tigre simpleitk ipykernel opencv astropy tomopy nibabel scikit-image scikit-learn scipy tqdm scikit-learn-intelex jupyter ipywidgets
+conda create --name tigre_env -c anaconda -c ccpi -c conda-forge python tigre simpleitk ipykernel opencv astropy tomopy nibabel scikit-image scikit-learn scipy tqdm scikit-learn-intelex jupyter ipywidgets
 conda activate tigre_env
 
 conda list --export > conda-package-list.txt
@@ -14,301 +14,16 @@ conda create -n tigre_env --file conda-package-list.txt
 import json
 import math
 import os
-from re import L
-
-import cv2
-import matplotlib.pyplot as plt
-import nibabel as nib
-import numpy as np
-# from __future__ import division
-from astropy.convolution import Gaussian2DKernel
-from skimage.registration import phase_cross_correlation
-from tqdm import trange, tqdm
-from typing import List
 from multiprocessing import freeze_support
 
-import tigre.algorithms as algs
-from tigre.utilities.geometry import Geometry
+import nibabel as nib
+import numpy as np
+from astropy.convolution import Gaussian2DKernel
+from tqdm import tqdm
 
-import filereader
+import shared_functions as s
 
 kernel = Gaussian2DKernel(x_stddev=2)
-
-
-class ConeGeometryJasper(Geometry):
-    ''' Some of these parameters are overwritten with better values in the recon_scan functions '''
-
-    def __init__(self, gReconParams: dict, high_quality: bool = True, nVoxel=None):
-
-        Geometry.__init__(self)
-        pixels = gReconParams['pixels']
-        pixel_pitch_mm = gReconParams['pixel_pitch']
-        DSD = gReconParams['distance_source_detector']
-        DOD = gReconParams['distance_object_detector']
-        rotDetector = gReconParams['detector_rotation']
-
-        total_detector_size_mm = pixels * pixel_pitch_mm
-
-        # VARIABLE                                                DESCRIPTION                   UNITS
-        # ------------------------------------------------------------------------------------------------
-        if high_quality:
-            self.nDetector = np.array((pixels, pixels))         # number of pixels              (px)
-            self.nVoxel = np.array((pixels, pixels, pixels))    # number of voxels              (vx)
-            self.sVoxel = np.array((total_detector_size_mm,
-                                    total_detector_size_mm,
-                                    total_detector_size_mm))    # total size of the image       (mm)
-        else:
-            number_of_voxels = 1
-            number_of_pixels = 11
-
-            self.nDetector = np.array((number_of_pixels,
-                                       pixels))                # number of pixels              (px)
-            self.nVoxel = np.array((number_of_voxels,
-                                    pixels,
-                                    pixels))                    # number of voxels              (vx)
-            self.sVoxel = np.array((pixel_pitch_mm,
-                                    pixels * pixel_pitch_mm,
-                                    pixels * pixel_pitch_mm))    # total size of the image       (mm)
-
-        ''' We will set the common variables last because other variables depend on some of them '''
-        # VARIABLE                                                DESCRIPTION                   UNITS
-        # ------------------------------------------------------------------------------------------------
-        self.DSD = DSD                                          # Distance Source Detector      (mm)
-        self.DSO = DSD - DOD                                    # Distance Source Origin        (mm)
-        # Detector parameters
-        self.dDetector = np.array((pixel_pitch_mm,
-                                   pixel_pitch_mm))             # size of each pixel            (mm)
-        self.sDetector = self.nDetector * self.dDetector        # total size of the detector    (mm)
-
-        # Offsets
-        # Offset of image from origin   (mm)
-        self.offOrigin = np.array((0, 0, 0))
-        self.offDetector = np.array((0, 0))                     # Offset of Detector            (mm)
-        # Detector rotation             (radians)
-        self.rotDetector = rotDetector
-        # Image parameters
-        self.dVoxel = self.sVoxel / self.nVoxel                 # size of each voxel            (mm)
-        # Auxiliary
-        # Accuracy of FWD proj          (vx/sample)
-        self.accuracy = 0.5
-        # Mode
-        self.mode = 'cone'                                      # parallel, cone                ...
-        self.filter = None
-
-        '''if nVoxel is not None:
-            self.DSD = 1536                                     # Distance Source Detector      (mm)
-            self.DSO = 1000                                     # Distance Source Origin        (mm)
-                                                                # Detector parameters
-            self.nDetector = np.array((nVoxel[1],
-                                       nVoxel[2])
-                                                                ) # (V,U) number of pixels        (px)
-            self.dDetector = np.array([0.8, 0.8])               # size of each pixel            (mm)
-            self.sDetector = self.dDetector * self.nDetector    # total size of the detector    (mm)
-                                                                # Image parameters
-            self.nVoxel = np.array((nVoxel))                    # number of voxels              (vx)
-            self.sVoxel = np.array((256, 256, 256))             # total size of the image       (mm)
-            self.dVoxel = self.sVoxel / self.nVoxel             # size of each voxel            (mm)
-            # Offsets
-            self.offOrigin = np.array((0, 0, 0))                # Offset of image from origin   (mm)
-            self.offDetector = np.array((0, 0))                 # Offset of Detector            (mm)
-            self.rotDetector = np.array((0, 0, 0))
-            # Auxiliary
-            # Accuracy of FWD proj          (vx/sample)
-            self.accuracy = 0.5
-            # Mode
-            self.mode = 'cone'                                  # parallel, cone'''
-
-
-def solve_for_y(poly_coeffs, y):
-    pc = poly_coeffs.copy()
-    pc[-1] -= y
-    return np.roots(pc)
-
-
-def find_optimal_offset(gReconParams: dict, projections, angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=70):
-    ''' TODO Replace this! It does not work
-
-    This function takes quite a while, which can probably be optimized.
-    On the other hand, we only have to do this once per scan setup, and then store the value for later use.
-    '''
-
-    projection0 = projections[0, :, :]
-    projection180 = np.flip(projections[round(projections.shape[0]/2)-1, :, :], 1)
-
-    shift, error, diffphase = phase_cross_correlation(projection0, projection180,
-                                                      upsample_factor=100)
-
-    estimate = -shift.item(1)/2
-    print(estimate)
-    #########################################
-    # estimate = 4.9 # px
-    ##########################################
-
-    geom = ConeGeometryJasper(gReconParams, high_quality=False)
-    # we should avoid pixels from the cross of the detector
-    yshift = 3
-    # we also need to take into account that detector motion up to 5 pixels could have been used during the acquisition
-    projections_small = projections[:, int(
-        projections.shape[1]/2)-6-yshift:int(projections.shape[1]/2)+5-yshift, :]
-
-    max_value = -9999
-    opt_shift = -99
-    cnt = 0
-    xvalues = []
-    yvalues = []
-
-    for i in trange(int(estimate*100) - search_range, int(estimate*100) + search_range, 1):
-        # note that the detector x and y axis are opposite the x and y coordinate system of the geometry
-        geom.offDetector = np.vstack(
-            (detector_y_offsets, detector_x_offsets+(i/100) * gReconParams['pixel_pitch'])).T
-        geom.rotDetector = np.array(gReconParams['detector_rotation'])
-        geom.DSD = gReconParams['distance_source_detector']
-        # stageoffset = 0
-        geom.DSO = geom.DSD - gReconParams['distance_object_detector']  # - stageoffset
-
-        imgfdk = algs.fdk(projections_small, geom, angles)
-        im = imgfdk[0, :, :].astype(np.float32)
-        dft = cv2.dft(im, flags=cv2.DFT_COMPLEX_OUTPUT)
-        dft_shift = np.fft.fftshift(dft)
-
-        magnitude_spectrum = 20*np.log(cv2.magnitude(dft_shift[:, :, 0], dft_shift[:, :, 1]))
-        value = np.mean(magnitude_spectrum)
-        if value > max_value:
-            max_value = value
-            opt_shift = i
-        xvalues.append((i/100) * gReconParams['pixel_pitch'])
-        yvalues.append(value)
-
-    plt.xlabel('X values')
-    plt.ylabel('Y values')
-    plt.scatter(xvalues, yvalues)
-    plt.show()
-    return (opt_shift/100) * gReconParams['pixel_pitch']
-
-
-def recon_scan(gReconParams: dict, projections, angles, sample_z_offset, detector_x_offsets, detector_y_offsets, global_detector_shift_y, high_quality=True):
-    geo = ConeGeometryJasper(gReconParams, high_quality=high_quality)
-    geo.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+global_detector_shift_y)).T
-    geo.rotDetector = np.array(gReconParams['detector_rotation'])
-    geo.DSD = gReconParams['distance_source_detector']
-    geo.DSO = geo.DSD - gReconParams['distance_object_detector'] - sample_z_offset
-
-    # number of voxels              (vx)
-    geo.nVoxel = np.array(gReconParams['recon_voxels'])
-    geo.sVoxel = np.array(gReconParams['recon_size'])          # total size of the image       (mm)
-    geo.dVoxel = geo.sVoxel/geo.nVoxel                 # size of each voxel            (mm)
-    geo.offOrigin = np.array((0, 0, 0))
-
-    # imgfdk=algs.fdk(projections,geo,angles,filter=None)
-    imgfdk = algs.fdk(projections, geo, angles, filter='cosine')
-    imgfdk[imgfdk < 0] = 0
-    imgfdkint = (imgfdk*10000).astype(np.int32)
-
-    imgfdkint = np.swapaxes(imgfdkint, 1, 2)
-    imgfdkint = np.swapaxes(imgfdkint, 0, 2)
-    imgfdkint = np.flip(imgfdkint, 2)
-
-    return imgfdkint
-
-
-def recon_scan_cgls(gReconParams: dict, projections, angles, sample_z_offset, detector_x_offsets, detector_y_offsets, global_detector_shift_y, high_quality=True):
-    geo = ConeGeometryJasper(gReconParams, high_quality=high_quality)
-    geo.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+global_detector_shift_y)).T
-    geo.rotDetector = np.array(gReconParams['detector_rotation'])
-    geo.DSD = gReconParams['distance_source_detector']
-    geo.DSO = geo.DSD - gReconParams['distance_object_detector'] - sample_z_offset
-
-    # number of voxels              (vx)
-    geo.nVoxel = np.array(gReconParams['recon_voxels'])
-    geo.sVoxel = np.array(gReconParams['recon_size'])          # total size of the image       (mm)
-    geo.dVoxel = geo.sVoxel/geo.nVoxel                 # size of each voxel            (mm)
-    geo.offOrigin = np.array((0, 0, 0))
-    imgfdk = algs.cgls(projections, geo, angles, 60, init='FDK')
-    # imgfdk=algs.fdk(projections,geo,angles,filter=None)
-    # imgfdk=algs.fdk(projections,geo,angles,filter='cosine')
-    imgfdk[imgfdk < 0] = 0
-    imgfdkint = (imgfdk*10000).astype(np.int32)
-
-    imgfdkint = np.swapaxes(imgfdkint, 1, 2)
-    imgfdkint = np.swapaxes(imgfdkint, 0, 2)
-    imgfdkint = np.flip(imgfdkint, 2)
-
-    return imgfdkint
-
-
-def recon_scan_fista(gReconParams: dict, projections, angles, sample_z_offset, detector_x_offsets, detector_y_offsets, global_detector_shift_y, hyper, tviter, tvlambda, high_quality=True):
-    geo = ConeGeometryJasper(gReconParams, high_quality=high_quality)
-    geo.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+global_detector_shift_y)).T
-    geo.rotDetector = np.array(gReconParams['detector_rotation'])
-    geo.DSD = gReconParams['distance_source_detector']
-    geo.DSO = geo.DSD - gReconParams['distance_object_detector'] - sample_z_offset
-
-    # number of voxels              (vx)
-    geo.nVoxel = np.array(gReconParams['recon_voxels'])
-    geo.sVoxel = np.array(gReconParams['recon_size'])          # total size of the image       (mm)
-    geo.dVoxel = geo.sVoxel/geo.nVoxel                 # size of each voxel            (mm)
-    geo.offOrigin = np.array((0, 0, 0))
-    imgfdk = algs.fista(projections, geo, angles, 100, hyper=hyper,
-                        tviter=tviter, tvlambda=tvlambda)
-# )algs.cgls(projections, geo, angles, 60,init='FDK')
-    # imgfdk=algs.fdk(projections,geo,angles,filter=None)
-    # imgfdk=algs.fdk(projections,geo,angles,filter='cosine')
-    imgfdk[imgfdk < 0] = 0
-    imgfdkint = (imgfdk*10000).astype(np.int32)
-
-    imgfdkint = np.swapaxes(imgfdkint, 1, 2)
-    imgfdkint = np.swapaxes(imgfdkint, 0, 2)
-    imgfdkint = np.flip(imgfdkint, 2)
-
-    return imgfdkint
-
-
-def save_array(path: str, filename: str, array: np.ndarray):
-    s = os.path.join(path, filename)
-
-    if (isinstance(array, np.ndarray)):
-        print(f'Saving Numpy array file: {s}')
-        np.save(s, array)
-    elif (isinstance(array, nib.Nifti1Image)):
-        print(f'Saving Nifti array file: {s}')
-        nib.save(array, s)
-    else:
-        print('Array type supported in save_array, add it!?')
-
-
-def files_exist(path: str, file_list: List[str]) -> bool:
-    ''' If a file does not exist or is less than the threshold, return False '''
-    for f in file_list:
-        full_path = os.path.join(path, f)
-        if not os.path.exists(full_path):
-            return False
-    return True
-
-
-def save_and_or_load_npy_files(path: str, array_filename: str, generating_function):
-    p = os.path.join(path, array_filename)
-    if files_exist(path, array_filename):
-        print(f'Loading existing numpy file: {p}')
-        my_array = np.load()
-    else:
-        my_array = generating_function()
-        print(f'Saving numpy file: {p}')
-        np.save(p, my_array)
-    return my_array
-
-
-def generate_dac_values(gReconParams, open_mean_th0, th0_list, mean):
-    DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
-    for i in trange(0, open_mean_th0.shape[1]):
-        for j in range(0, open_mean_th0.shape[2]):
-            yvalues = open_mean_th0[:, i, j]
-            regressions, res, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
-            regression_out[:, i, j] = regressions
-            DAC = solve_for_y(regressions, mean)[1]
-            if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
-                DAC = th0_list[th]
-            DAC_values[i, j] = DAC
-    return DAC_values
 
 
 if __name__ == "__main__":
@@ -356,7 +71,7 @@ if __name__ == "__main__":
 
         numpy_output_files = ['projs_stack_th0.npy', 'open_stack_th0.npy',
                               'projs_stack_th1.npy', 'open_stack_th1.npy', 'thlist_th0.npy', 'thlist_th1.npy']
-        if files_exist(results_folder, numpy_output_files):
+        if s.files_exist(results_folder, numpy_output_files):
             print('Loading existing numpy files, should take ~7.5 seconds')
 
             spectral_projs_th0 = np.load(os.path.join(results_folder, numpy_output_files[0]))
@@ -378,10 +93,10 @@ if __name__ == "__main__":
                 th0_keV = folder_string[0:folder_string.find('_')]
                 th1_keV = folder_string[folder_string.find('_')+1:]
 
-                angles = filereader.get_proj_angles(scan_json)
-                z_offset = filereader.get_samplestage_z_offset(scan_json)
-                detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
-                exp_time.append(filereader.get_exposure_time_projection(scan_json))
+                angles = s.get_proj_angles(scan_json)
+                z_offset = s.get_samplestage_z_offset(scan_json)
+                detector_x_offsets, detector_y_offsets = s.get_detector_offsets(scan_json)
+                exp_time.append(s.get_exposure_time_projection(scan_json))
             exp_time = np.asarray(exp_time)
 
         else:
@@ -404,25 +119,25 @@ if __name__ == "__main__":
                 folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
                 th0_keV = folder_string[0:folder_string.find('_')]
                 th1_keV = folder_string[folder_string.find('_')+1:]
-                exp_time.append(filereader.get_exposure_time_projection(scan_json))
+                exp_time.append(s.get_exposure_time_projection(scan_json))
                 th0_list.append(float(th0_keV))
                 th1_list.append(float(th1_keV))
 
-                projs_th0 = filereader.projectionsloader(
+                projs_th0 = s.projectionsloader(
                     scan_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-                openimg_th0 = filereader.openimgloader(
+                openimg_th0 = s.openimgloader(
                     open_image_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-                projs_th1 = filereader.projectionsloader(
+                projs_th1 = s.projectionsloader(
                     scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-                openimg_th1 = filereader.openimgloader(
+                openimg_th1 = s.openimgloader(
                     open_image_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
                 spectral_projs_th0.append(projs_th0)
                 spectral_open_th0.append(openimg_th0)
                 spectral_projs_th1.append(projs_th1)
                 spectral_open_th1.append(openimg_th1)
-                detector_x_offsets, detector_y_offsets = filereader.get_detector_offsets(scan_json)
-                angles = filereader.get_proj_angles(scan_json)
-                z_offset = filereader.get_samplestage_z_offset(scan_json)
+                detector_x_offsets, detector_y_offsets = s.get_detector_offsets(scan_json)
+                angles = s.get_proj_angles(scan_json)
+                z_offset = s.get_samplestage_z_offset(scan_json)
             spectral_projs_th0 = np.asarray(spectral_projs_th0)
             spectral_open_th0 = np.asarray(spectral_open_th0)
             spectral_projs_th1 = np.asarray(spectral_projs_th1)
@@ -479,11 +194,10 @@ if __name__ == "__main__":
             + np.mean(open_mean_th0[th, a2:a3, a2:a3])
         )
         print(f'th = {th}, mean = {mean}')  # E.g. 36895.64768079413
-        regression_out = np.zeros((3, gReconParams['pixels'], gReconParams['pixels']))
 
         print('Finding best DAC values per pixel...')
-        DAC_values = save_and_or_load_npy_files(
-            results_folder, f'th{th}_dac_values.npy', lambda: generate_dac_values(gReconParams, open_mean_th0, th0_list, mean))
+        DAC_values = s.save_and_or_load_npy_files(
+            results_folder, f'th{th}_dac_values.npy', lambda: s.generate_dac_values(gReconParams, open_mean_th0, th0_list, mean, th))
 
         fit_array = spectral_projs_th0.reshape(spectral_projs_th0.shape[0], -1)
 
@@ -500,44 +214,35 @@ if __name__ == "__main__":
             (regressions[1, :]*calc_dacs**1) + regressions[2, :]
         projection_data = proj_data_flat.reshape(
             spectral_projs_th0.shape[1], spectral_projs_th0.shape[2], spectral_projs_th0.shape[3])
-        save_array(results_folder, 'Projections_th0_'
-                   + str(th0_list[th])+'_keV.npy', projection_data)
+        s.save_array(results_folder, 'Projections_th0_'
+                     + str(th0_list[th])+'_keV.npy', projection_data)
 
         # TODO Ask Jasper about this VERY SUSPICIOUS CODE
         # mean = (np.mean(projection_data[:, :, 0:10]) + np.mean(projection_data[:, :, 503:513]))/2
         ofc = -np.log(projection_data/1)
-        save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
+        s.save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
 
-        print('Doing median filter on OFC data...')
-        ofc_mf = filereader.median_filter_projection_set(ofc, 5)
-        diff_mf = np.abs(ofc-ofc_mf)
-        meanmap = np.mean(diff_mf, axis=0)
-        stdmap = np.std(diff_mf, axis=0)
-        badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
-        half = np.int32(badmap.shape[0]/2)
-        badmap[half-2:half+1] = 0
-        badmap[:, half-2:half+1] = 0
-        badmap[meanmap > 0.2] = 0
-        badmap[stdmap > 0.05] = 0
-        ofc_bpc = filereader.apply_badmap_to_projections(ofc, badmap)
-        ofc_bpc_mf = filereader.median_filter_projection_set(ofc_bpc, 3)  # TODO THIS IS FUCKED
+        ofc_bpc = s.save_and_or_load_npy_files(
+            results_folder, 'bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
+
+        ofc_bpc_mf = s.median_filter_projection_set(ofc_bpc, 3)  # TODO THIS IS FUCKED
         if th == 0:
             # print(f'th = {th}, finding optimal offset')
             # (mm) # find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=25)
-            global_detector_shift_y = 2.51
-            print(f'global_detector_shift_y = {global_detector_shift_y} (mm)')
+            centre_of_rotation_offset_y_mm = 2.51
+            print(f'global_detector_shift_y = {centre_of_rotation_offset_y_mm} (mm)')
 
             ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
-            save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
+            s.save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
 
         print('Doing recon finally!')
-        img_th0 = recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
-                             detector_y_offsets, global_detector_shift_y)
+        img_th0 = s.recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
+                               detector_y_offsets, centre_of_rotation_offset_y_mm)
 
         ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-        save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
+        s.save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
 
-        img_th0 = recon_scan(gReconParams, ofc_bpc_mf, angles, z_offset, detector_x_offsets,
-                             detector_y_offsets, global_detector_shift_y)
+        img_th0 = s.recon_scan(gReconParams, ofc_bpc_mf, angles, z_offset, detector_x_offsets,
+                               detector_y_offsets, centre_of_rotation_offset_y_mm)
         ni_img = nib.Nifti1Image(img_th0, np.eye(4))
-        save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
+        s.save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
