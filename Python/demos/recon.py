@@ -29,6 +29,15 @@ kernel = Gaussian2DKernel(x_stddev=2)
 if __name__ == "__main__":
     freeze_support()  # needed for Windows - see https://stackoverflow.com/questions/63871662/python-multiprocessing-freeze-support-error
 
+    drive = 'f:\\'
+    # basefolder = os.path.join(drive,'jasper','data','20220726_scanseries')
+    # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_Al_Phantom_Recon_Alignment')
+    base_json_file = os.path.join(base_folder, 'scan_settings.json')
+    results_folder = os.path.join(base_folder, 'results_fillgap')
+    if not os.path.exists(results_folder):
+        os.makedirs(results_folder)
+
     # Make a list of globals for the reconstruction setting, and log them in a json file
     gReconParams = dict()
 
@@ -42,26 +51,17 @@ if __name__ == "__main__":
     gReconParams['recon_size'] = (gReconParams['pixels'] * gReconParams['pixel_pitch'], gReconParams['pixels']
                                   * gReconParams['pixel_pitch'], gReconParams['pixels'] * gReconParams['pixel_pitch'])  # (mm)
 
-    ''' TODO These should really be read from the JSON file! '''
     gReconParams['distance_source_detector'] = 188.347  # 9+9+30+100+30+9+1.347 (mm)
     gReconParams['z_stage_distance_mm'] = 20  # Varies between 0 and 100 mm
+    gReconParams['z_stage_distance_mm'] = s.get_sample_z_from_first_scan_json(
+        base_json_file)  # Varies between 0 and 100 mm
     gReconParams['distance_object_detector'] = 30 + \
         gReconParams['z_stage_distance_mm'] + 9+1.347  # (mm)
-    gReconParams['detector_rotation'] = (
-        math.radians(-0.3), 0., 0.)  # (mm) TODO Check accuracy!!!!!
+    gReconParams['detector_rotation'] = (math.radians(-0.3), 0., 0.)  # (mm)
 
-    drive = 'f:\\'
-    # basefolder = os.path.join(drive,'jasper','data','20220726_scanseries')
-    # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_Al_Phantom_Recon_Alignment')
-    base_json_file = os.path.join(base_folder, 'scan_settings.json')
-    results_folder = os.path.join(base_folder, 'results_fillgap')
-    if not os.path.exists(results_folder):
-        os.makedirs(results_folder)
+    assert gReconParams['z_stage_distance_mm'] < 100 and gReconParams['z_stage_distance_mm'] > 0
 
-    ''' Load tiff files, transform a bit and save to numpy files.
-    Load the files if they exist already '''
-
+    ''' Load tiff files, transform a bit and save to numpy files. Load the files if they exist already '''
     if os.path.exists(base_json_file):
         f = open(base_json_file)
         dashboard = json.load(f)
@@ -223,21 +223,23 @@ if __name__ == "__main__":
         s.save_array(results_folder, 'projs_th0_'+str(th0_list[th])+'OFC_interp.npy', ofc)
 
         ofc_bpc = s.save_and_or_load_npy_files(
-            results_folder, 'bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
+            results_folder, f'th{th}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
 
         ofc_bpc_mf = s.median_filter_projection_set(ofc_bpc, 3)  # TODO THIS IS FUCKED
         if th == 0:
             # print(f'th = {th}, finding optimal offset')
             # (mm) # find_optimal_offset(gReconParams, spectral_projs_th0[1, :, :, :], angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=25)
-            centre_of_rotation_offset_y_mm = 2.51
-            print(f'global_detector_shift_y = {centre_of_rotation_offset_y_mm} (mm)')
+            centre_of_rotation_offset_x_mm = 2.51
+            centre_of_rotation_offset_y_mm = 0
+            print(f'centre_of_rotation_offset_x_mm = {centre_of_rotation_offset_x_mm} (mm)')
+            print(f'centre_of_rotation_offset_y_mm = {centre_of_rotation_offset_y_mm} (mm)')
 
             ni_img = nib.Nifti1Image(ofc_bpc_mf, np.eye(4))
             s.save_array(results_folder, 'Proj_th0_'+str(th0_list[th])+'OFC_BPC_MF.nii', ni_img)
 
         print('Doing recon finally!')
         img_th0 = s.recon_scan(gReconParams, ofc_bpc, angles, z_offset, detector_x_offsets,
-                               detector_y_offsets, centre_of_rotation_offset_y_mm)
+                               detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm)
 
         ni_img = nib.Nifti1Image(img_th0, np.eye(4))
         s.save_array(results_folder, 'Recon_th0_'+str(th0_list[th])+'OFC_BPC.nii', ni_img)
