@@ -34,12 +34,12 @@ if __name__ == "__main__":
     2. Scan over a parameter with one reconstruction each
 
     '''
-    scan_over_a_paramter = False
+    scan_over_a_paramter = True
     th = 0
 
     # Make folders and load files for recon
     drive = 'f:\\'
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_Al_Phantom_Recon_Alignment')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_ffpe_WhateverBreast')
     # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....                                        a = 1.2
     # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x=5.02 y=-0.24                    a =
 
@@ -85,14 +85,14 @@ if __name__ == "__main__":
     assert gReconParams['z_stage_distance_mm'] < 100 and gReconParams['z_stage_distance_mm'] > 0
     print(gReconParams)
 
-    centre_of_rotation_offset_x_mm = 2.51
+    centre_of_rotation_offset_x_mm = 0.2
     centre_of_rotation_offset_y_mm = -0.24  # Could be 0, not sure yet
 
     ofc_bpc = s.save_and_or_load_npy_files(
         output_folder, f'th{th}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
 
     if scan_over_a_paramter:
-        r = np.linspace(1, 4, 31)
+        r = np.linspace(-1, 3, 301)
         unit = 'mm'
         # unit = 'degrees'
         for i in trange(0, len(r)):
