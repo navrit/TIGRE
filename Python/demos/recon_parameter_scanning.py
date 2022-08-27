@@ -39,30 +39,25 @@ if __name__ == "__main__":
 
     # Make folders and load files for recon
     drive = 'f:\\'
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220822_ffpe_WhateverBreast')
-    # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....                                        a = 1.2
-    # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x=5.02 y=-0.24                    a =
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220805_tumourWhateverBreast')
+
+    # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....
+    # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x= 5.02 y=-0.24
+    # 20220805_tumourWhateverBreast       det_rot=(0 to -0.5, 0, 0) x=-0.27 y=-0.24
 
     base_json_file = os.path.join(base_folder, 'scan_settings.json')
     output_folder = os.path.join(base_folder, 'parameter_scanning')
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    ''' Load tiff files, transform a bit and save to numpy files.
-    Load the files if they exist already '''
-    spectral_projs_th0, spectral_open_th0, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets = s.load_or_generate_data_arrays(
-        base_json_file, base_folder, output_folder)
-
-    open_mean_th0 = np.mean(spectral_open_th0, axis=1)
-    open_mean_th0[0, :, :] = open_mean_th0[0, :, :]/exp_time[0]
-    spectral_projs_th0[0, :, :, :] = spectral_projs_th0[0, :, :, :] / exp_time[0]
-    ofc = -np.log(spectral_projs_th0[0, :, :, :] / open_mean_th0[0, :, :])
-
     # Make a list of globals for the reconstruction setting, and log them in a json file
     gReconParams = dict()
 
     gReconParams['pixels'] = 512  # (pixels)
     gReconParams['pixel_pitch'] = 0.055  # (mm)
+    gReconParams['fill_gap'] = True
+    gReconParams['median_filter'] = False
+    gReconParams['bad_pixel_correction'] = True
     gReconParams['recon_voxels'] = (
         gReconParams['pixels'], gReconParams['pixels'], gReconParams['pixels'])  # number of voxels (vx) # TODO Might be less than 1/2 or 1/4 ... of the number of pixels
     gReconParams['distance_source_detector'] = 188.347  # 9+9+30+100+30+9+1.347 (mm)
@@ -77,22 +72,32 @@ if __name__ == "__main__":
     # a = gReconParams['pixel_pitch']
     DSD = gReconParams['distance_source_detector']
     DSO = DSD - gReconParams['distance_object_detector']
-    a = 2 * 512 * 0.055 / (((DSD-DSO) / DSO) + 1)
+    a = 512 * 0.055 / (((DSD-DSO) / DSO) + 1)
 
     gReconParams['recon_size'] = (a, a, a)  # 28.16 (mm)
     gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm)
 
-    assert gReconParams['z_stage_distance_mm'] < 100 and gReconParams['z_stage_distance_mm'] > 0
+    assert gReconParams['z_stage_distance_mm'] < 100 and gReconParams['z_stage_distance_mm'] >= 0
     print(gReconParams)
 
     centre_of_rotation_offset_x_mm = 0.2
     centre_of_rotation_offset_y_mm = -0.24  # Could be 0, not sure yet
 
+    ''' Load tiff files, transform a bit and save to numpy files.
+    Load the files if they exist already '''
+    spectral_projs_th0, spectral_open_th0, _, _, _, _, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets = s.load_or_generate_data_arrays(
+        base_json_file, base_folder, output_folder, gReconParams)
+
+    open_mean_th0 = np.mean(spectral_open_th0, axis=1)
+    open_mean_th0[0, :, :] = open_mean_th0[0, :, :]/exp_time[0]
+    spectral_projs_th0[0, :, :, :] = spectral_projs_th0[0, :, :, :] / exp_time[0]
+    ofc = -np.log(spectral_projs_th0[0, :, :, :] / open_mean_th0[0, :, :])
+
     ofc_bpc = s.save_and_or_load_npy_files(
         output_folder, f'th{th}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
 
     if scan_over_a_paramter:
-        r = np.linspace(-1, 3, 301)
+        r = np.linspace(-.36, -.18, 41)
         unit = 'mm'
         # unit = 'degrees'
         for i in trange(0, len(r)):
@@ -100,7 +105,7 @@ if __name__ == "__main__":
             # centre_of_rotation_offset_y_mm = r[i]
             centre_of_rotation_offset_x_mm = r[i]
 
-            a = 200
+            a = 400
             img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles,
                                         detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, False)
             # img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, :, :], angles,  detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm, True)

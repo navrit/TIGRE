@@ -14,6 +14,8 @@ from scipy.signal import medfilt2d
 from tigre.utilities.geometry import Geometry
 from tqdm import tqdm, trange
 
+import matplotlib.pyplot as plt
+
 
 def load_projection(filepaths, badpixelcorr=True, medianfilter=False, fillgap=False):
     finalarray = np.array([])
@@ -458,24 +460,37 @@ def save_array(path: str, filename: str, array: np.ndarray):
         print('Array type supported in save_array, add it!?')
 
 
-def load_or_generate_data_arrays(base_json_file, base_folder, results_folder):
+def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gReconParams):
+    exp_time = []
+    th0_list = []
+    th1_list = []
+    spectral_projs_th0 = []
+    spectral_open_th0 = []
+    spectral_projs_th1 = []
+    spectral_open_th1 = []
+    numpy_output_files = ['projs_stack_th0.npy', 'open_stack_th0.npy',
+                          'projs_stack_th1.npy', 'open_stack_th1.npy', 'thlist_th0.npy', 'thlist_th1.npy']
+
     if os.path.exists(base_json_file):
         f = open(base_json_file)
         dashboard = json.load(f)
-        exp_time = []
-        # th0_list = []
-        # th1_list = []
 
-        numpy_output_files = ['projs_stack_th0.npy', 'open_stack_th0.npy']
         if files_exist(results_folder, numpy_output_files):
             print('Loading existing numpy files, should take <7.5 seconds')
 
             spectral_projs_th0 = np.load(os.path.join(results_folder, numpy_output_files[0]))
             spectral_open_th0 = np.load(os.path.join(results_folder, numpy_output_files[1]))
-            # spectral_projs_th1 = np.load(os.path.join(results_folder, numpy_output_files[2]))
-            # spectral_open_th1 = np.load(os.path.join(results_folder, numpy_output_files[3]))
-            # th0_list = np.load(os.path.join(results_folder, numpy_output_files[4]))
-            # th1_list = np.load(os.path.join(results_folder, numpy_output_files[5]))
+            spectral_projs_th1 = np.load(os.path.join(results_folder, numpy_output_files[2]))
+            spectral_open_th1 = np.load(os.path.join(results_folder, numpy_output_files[3]))
+            th0_list = np.load(os.path.join(results_folder, numpy_output_files[4]))
+            th1_list = np.load(os.path.join(results_folder, numpy_output_files[5]))
+
+            assert spectral_projs_th0.size > 1  # 1 byte minimum
+            assert spectral_open_th0.size > 1  # 1 byte minimum
+            assert spectral_projs_th1.size > 1  # 1 byte minimum
+            assert spectral_open_th1.size > 1  # 1 byte minimum
+            assert th0_list.size > 1  # 1 byte minimum
+            assert th1_list.size > 1  # 1 byte minimum
 
             for i in tqdm(dashboard['thresholdscan']):
                 scan_folder = os.path.join(
@@ -483,10 +498,10 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder):
                 scan_json = os.path.join(
                     scan_folder, dashboard['thresholdscan'][i]['projections_json'])
                 open_image_json = scan_json
-                # folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
+                folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
 
-                # th0_keV = folder_string[0:folder_string.find('_')]
-                # th1_keV = folder_string[folder_string.find('_')+1:]
+                th0_keV = folder_string[0:folder_string.find('_')]
+                th1_keV = folder_string[folder_string.find('_')+1:]
 
                 exp_time.append(get_exposure_time_projection(scan_json))
             exp_time = np.asarray(exp_time)
@@ -494,56 +509,54 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder):
         else:
             print(f'Making new numpy files, should take ~4.5 minutes. At least one file was missing :( ')
 
-            spectral_projs_th0 = []
-            spectral_open_th0 = []
-            # spectral_projs_th1 = []
-            # spectral_open_th1 = []
-            # th0_list = []
-            # th1_list = []
             for i in tqdm(dashboard['thresholdscan']):
                 scan_folder = os.path.join(
                     base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
                 scan_json = os.path.join(
                     scan_folder, dashboard['thresholdscan'][i]['projections_json'])
                 open_image_json = scan_json
-                # folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
-                # th0_keV = folder_string[0:folder_string.find('_')]
-                # th1_keV = folder_string[folder_string.find('_')+1:]
+                folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
+                th0_keV = folder_string[0:folder_string.find('_')]
+                th1_keV = folder_string[folder_string.find('_')+1:]
                 exp_time.append(get_exposure_time_projection(scan_json))
-                # th0_list.append(float(th0_keV))
-                # th1_list.append(float(th1_keV))
+                th0_list.append(float(th0_keV))
+                th1_list.append(float(th1_keV))
 
                 projs_th0 = projectionsloader(
                     scan_json, th0=True, badpixelcorr=False, medianfilter=False, fillgap=False)
                 openimg_th0 = openimgloader(
                     open_image_json, th0=True, badpixelcorr=False, medianfilter=False, fillgap=False)
-                # projs_th1 = projectionsloader(scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
-                # openimg_th1 = openimgloader(open_image_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                projs_th1 = projectionsloader(
+                    scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
+                openimg_th1 = openimgloader(
+                    open_image_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
                 spectral_projs_th0.append(projs_th0)
                 spectral_open_th0.append(openimg_th0)
-                # spectral_projs_th1.append(projs_th1)
-                # spectral_open_th1.append(openimg_th1)
+                spectral_projs_th1.append(projs_th1)
+                spectral_open_th1.append(openimg_th1)
 
             spectral_projs_th0 = np.asarray(spectral_projs_th0)
             spectral_open_th0 = np.asarray(spectral_open_th0)
-            # spectral_projs_th1 = np.asarray(spectral_projs_th1)
-            # spectral_open_th1 = np.asarray(spectral_open_th1)
+            spectral_projs_th1 = np.asarray(spectral_projs_th1)
+            spectral_open_th1 = np.asarray(spectral_open_th1)
             exp_time = np.asarray(exp_time)
-            # th0_list = np.asarray(th0_list)
-            # th1_list = np.asarray(th1_list)
+            th0_list = np.asarray(th0_list)
+            th1_list = np.asarray(th1_list)
 
             np.save(os.path.join(results_folder, 'projs_stack_th0.npy'), spectral_projs_th0)
             np.save(os.path.join(results_folder, 'open_stack_th0.npy'), spectral_open_th0)
-            # np.save(os.path.join(results_folder, 'projs_stack_th1.npy'), spectral_projs_th1)
-            # np.save(os.path.join(results_folder, 'open_stack_th1.npy'), spectral_open_th1)
-            # np.save(os.path.join(results_folder, 'thlist_th0.npy'), th0_list)
-            # np.save(os.path.join(results_folder, 'thlist_th1.npy'), th1_list)
+            np.save(os.path.join(results_folder, 'projs_stack_th1.npy'), spectral_projs_th1)
+            np.save(os.path.join(results_folder, 'open_stack_th1.npy'), spectral_open_th1)
+            np.save(os.path.join(results_folder, 'thlist_th0.npy'), th0_list)
+            np.save(os.path.join(results_folder, 'thlist_th1.npy'), th1_list)
 
-    angles = get_proj_angles(scan_json)
-    z_offset = get_samplestage_z_offset(scan_json)
-    detector_x_offsets, detector_y_offsets = get_detector_offsets(scan_json)
+        angles = get_proj_angles(scan_json)
+        z_offset = get_samplestage_z_offset(scan_json)
+        detector_x_offsets, detector_y_offsets = get_detector_offsets(scan_json)
 
-    return spectral_projs_th0, spectral_open_th0, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets
+        return spectral_projs_th0, spectral_open_th0, spectral_projs_th1, spectral_open_th1, th0_list, th1_list, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets
+    else:
+        return None
 
 
 def files_exist(path: str, file_list: List[str]) -> bool:
@@ -567,19 +580,72 @@ def save_and_or_load_npy_files(path: str, array_filename: str, generating_functi
     return my_array
 
 
-def generate_dac_values(gReconParams, open_mean_th0, th0_list, mean, th):
-    DAC_values = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
-    regression_out = np.zeros((3, gReconParams['pixels'], gReconParams['pixels']))
-    for i in trange(0, open_mean_th0.shape[1]):
-        for j in range(0, open_mean_th0.shape[2]):
-            yvalues = open_mean_th0[:, i, j]
-            regressions, _, _, _, _ = np.polyfit(th0_list, yvalues, 2, full=True)
-            regression_out[:, i, j] = regressions
-            DAC = solve_for_y(regressions, mean)[1]
-            if (DAC > th0_list[th]*2) or (DAC < th0_list[th]/2):
-                DAC = th0_list[th]
-            DAC_values[i, j] = DAC
-    return DAC_values
+def calculate_mean_of_non_cross_pixels(gReconParams: dict, arr: np.ndarray, idx: int):
+    # e.g. arr --> 12, 512, 512
+    # idx 0 --> 0-12
+
+    a0 = 0
+    a1 = (gReconParams['pixels'] // 2) - 1  # 255 for 512 pixels
+    a2 = (gReconParams['pixels'] // 2) + 1  # 257 for 512 pixels
+    a3 = gReconParams['pixels']
+    mean = 0.25 * (
+        np.mean(arr[idx, a0:a1, a0:a1])
+        + np.mean(arr[idx, a0:a1, a2:a3])
+        + np.mean(arr[idx, a2:a3, a0:a1])
+        + np.mean(arr[idx, a2:a3, a2:a3])
+    )
+
+    return mean
+
+
+def generate_dac_values(gReconParams: dict, open_mean_th: np.ndarray, energy_list: List[float], plot: bool = False):
+    def power(my_list, pow):
+        return np.array([x**pow for x in my_list])
+
+    assert isinstance(gReconParams, dict)
+    assert len(open_mean_th.shape) == 3  # DAC, x/y, y/x
+    assert open_mean_th.shape[0] > 1
+    assert open_mean_th.shape[1] % 256 == 0 and open_mean_th.shape[2] % 256 == 0
+    assert len(energy_list) >= 1
+    assert isinstance(energy_list[0], float)
+
+    # energies = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
+    pixel_count_offsets = np.zeros(
+        (len(energy_list), gReconParams['pixels'], gReconParams['pixels']))
+    regression_out = np.zeros(
+        (3, gReconParams['pixels'], gReconParams['pixels']))
+
+    for i in trange(0, open_mean_th.shape[1]):
+        for j in range(0, open_mean_th.shape[2]):
+            y_values = open_mean_th[:, i, j]
+            fit_params, _, _, _, _ = np.polyfit(energy_list, y_values, 2, full=True)
+            # energy_keV = solve_for_y(fit_params, np.mean(y_values))[1]
+            # Supersample so we do not get artifacts - no jagged lines, only smooth lines :)
+            fit_x = np.linspace(energy_list[0], energy_list[-1], len(energy_list))
+
+            y_poly_fit = (fit_params[0]*power(fit_x, 2)) + \
+                (fit_params[1]*power(fit_x, 1)) + fit_params[2]
+
+            regression_out[:, i, j] = fit_params
+
+            if plot:
+                plt.xlabel('Energy (kev)')
+                plt.ylabel('Counts ()')
+                plt.title(f'Pixel = {i}, {j}')
+                # plt.scatter(energy_list, y_values, label='raw input')
+                plt.errorbar(energy_list, y_values, np.sqrt(y_values), fmt='')
+                plt.plot(fit_x, y_poly_fit, label='fit')
+                plt.legend()
+                plt.show()
+            ''' If the calculated DAC value is outside the reasonable range, we set it to the mean value effectively.
+                
+                I am not sure this is correct, we should pass it as a NaN and correct for it later...
+            '''
+            # if (energy_keV > energy_list[-1]*2) or (energy_keV < energy_list[0]/2):
+            # energy_keV = np.NaN
+            # energies[i, j] = energy_keV
+            pixel_count_offsets[:, i, j] = y_values - y_poly_fit
+    return pixel_count_offsets
 
 
 def generate_bad_pixel_corrected_array(ofc, gReconParams):
