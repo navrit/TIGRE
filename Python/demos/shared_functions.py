@@ -13,6 +13,10 @@ from scipy.ndimage import median_filter
 from scipy.signal import medfilt2d
 from tigre.utilities.geometry import Geometry
 from tqdm import tqdm, trange
+from skimage.registration import phase_cross_correlation
+import cv2
+from joblib import Parallel, delayed
+import SimpleITK as sitk
 
 import matplotlib.pyplot as plt
 
@@ -28,8 +32,28 @@ def load_projection(filepaths, badpixelcorr=True, medianfilter=False, fillgap=Fa
                 finalarray = finalarray + imarray
 
     if np.any(finalarray):
+        # if fillgap:
+        #     gap = 2
+        #     cross = np.zeros((finalarray.shape[0]+gap, finalarray.shape[1]+gap))
+        #     half = np.int32(finalarray.shape[0]/2)
+        #     cross[0:half, 0:half] = finalarray[0:half, 0:half]
+        #     cross[0:half, half+gap:cross.shape[1]] = finalarray[0:half, half:finalarray.shape[1]]
+        #     cross[half+gap:cross.shape[0], 0:half] = finalarray[half:finalarray.shape[0], 0:half]
+        #     cross[half+gap:cross.shape[0], half+gap:cross.shape[1]
+        #           ] = finalarray[half:finalarray.shape[0], half:finalarray.shape[1]]
+        #     for j in range(0, cross.shape[0]):
+        #         value = cross[j, half-1]/2
+        #         cross[j, half-1:half+gap] = value
+        #         value = cross[j, half+gap]/2
+        #         cross[j, half-1+gap:half+1+gap] = value
+        #         value = cross[half-1, j]/2
+        #         cross[half-1:half+gap, j] = value
+        #         value = cross[half+gap, j]/2
+        #         cross[half-1+gap:half+1+gap, j] = value
+        #     cross[256:258, 256:258] = np.nan
+        #     finalarray = cross[1:-1, 1:-1]
         if fillgap:
-            gap = 2
+            gap = 4
             cross = np.zeros((finalarray.shape[0]+gap, finalarray.shape[1]+gap))
             half = np.int32(finalarray.shape[0]/2)
             cross[0:half, 0:half] = finalarray[0:half, 0:half]
@@ -46,12 +70,13 @@ def load_projection(filepaths, badpixelcorr=True, medianfilter=False, fillgap=Fa
                 cross[half-1:half+gap, j] = value
                 value = cross[half+gap, j]/2
                 cross[half-1+gap:half+1+gap, j] = value
-            cross[256:258, 256:258] = np.nan
-            finalarray = cross[1:-1, 1:-1]
+            cross[half:half+gap, half:half+gap] = np.nan
+            finalarray = cross[2:-2, 2:-2]
 
         if badpixelcorr:
             finalarray[finalarray == np.inf] = 0
             finalarray[finalarray == -np.inf] = 0
+            finalarray[finalarray > 1e6] = 0
             finalarray[finalarray == 0] = 0
             half = np.int32(finalarray.shape[0]/2)
             finalarray[half-1] = 0
@@ -112,6 +137,7 @@ def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, 
 
     if os.path.exists(jsonfile):
         dirname = os.path.dirname(jsonfile)
+
         f = open(jsonfile)
         dashboard = json.load(f)
         totalfilelist = []
@@ -132,11 +158,13 @@ def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, 
                     projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         f.close()
+
         with multiprocessing.Pool(60) as pool:
             processes = [pool.apply_async(load_projection, args=(
                 x, badpixelcorr, medianfilter, fillgap)) for x in totalfilelist]
             result = [p.get() for p in processes]
             return np.asarray(result)
+
     else:
         return None
 
@@ -224,16 +252,28 @@ def get_exposure_time_projection(jsonfile=''):
 # this can possibly be done much faster with parallel processing
 
 
-def median_filter_projection_set(projections, kernelsize=5):
-    with multiprocessing.Pool(60) as pool:
-        processes = [pool.apply_async(median_filter_2D, args=(x, kernelsize)) for x in projections]
-        result = [p.get() for p in processes]
-        return np.asarray(result)
+def get_dac_settings(jsonfile=''):
+    th0_dacs = []
+    th1_dacs = []
+    if os.path.exists(jsonfile):
+        f = open(jsonfile)
+        dashboard = json.load(f)
+        th0_dacs.append(dashboard['acquisition']['th0_0'])
+        th0_dacs.append(dashboard['acquisition']['th0_1'])
+        th0_dacs.append(dashboard['acquisition']['th0_2'])
+        th0_dacs.append(dashboard['acquisition']['th0_3'])
+        th1_dacs.append(dashboard['acquisition']['th1_0'])
+        th1_dacs.append(dashboard['acquisition']['th1_1'])
+        th1_dacs.append(dashboard['acquisition']['th1_2'])
+        th1_dacs.append(dashboard['acquisition']['th1_3'])
+        f.close()
 
-    # lprojs = np.zeros_like(projections)
-    # for i in range(0, projections.shape[0]):
-    #     lprojs[i, :, :] = medfilt2d(projections[i, :, :], kernelsize)
-    # return (lprojs)
+    return th0_dacs, th1_dacs
+
+
+
+def median_filter_projection_set(projections, kernelsize=5):
+    return np.array(Parallel(n_jobs=60)(delayed(median_filter_2D)(x, kernelsize) for x in projections))
 
 
 def median_filter_2D(projection, kernelsize=5):
@@ -241,16 +281,20 @@ def median_filter_2D(projection, kernelsize=5):
 
 
 def apply_badmap_to_projections(projections, badmap):
-    with multiprocessing.Pool(60) as pool:
-        processes = [pool.apply_async(apply_badmap_to_projection, args=(x, badmap))
-                     for x in projections]
-        # for p in processes:
-        # print(p.get())
-        result = [p.get() for p in processes]
-        return np.asarray(result)
+    # a = list()
+    # for x in projections:
+    #     a.append(apply_badmap_to_projection(x, badmap))
+    # return np.array(a)
+    return np.array(Parallel(n_jobs=60)(delayed(apply_badmap_to_projection)(x, badmap) for x in projections))
 
 
 def apply_badmap_to_projection(projection, badmap):
+    assert isinstance(projection, np.ndarray)
+    assert isinstance(badmap, np.ndarray)
+    assert projection.shape == badmap.shape
+    assert projection.shape[0] == projection.shape[1]
+    assert projection.shape[0] % 256 == 0
+
     lproj = projection * badmap
     valid_mask = (lproj > 0)
     coords = np.array(np.nonzero(valid_mask)).T
@@ -291,11 +335,11 @@ class ConeGeometryJasper2(Geometry):
             self.nDetector = np.array((number_of_pixels,
                                        pixels))                # number of pixels              (px)
             self.nVoxel = np.array((number_of_voxels,
-                                    number_of_pixels,
-                                    number_of_pixels))                    # number of voxels              (vx)
-            self.sVoxel = np.array((number_of_voxels,
-                                    number_of_pixels,
-                                    number_of_pixels))    # total size of the image       (mm)
+                                    pixels,
+                                    pixels))                    # number of voxels              (vx)
+            self.sVoxel = np.array((pixel_pitch_mm*number_of_voxels,
+                                    pixels*pixel_pitch_mm,
+                                    pixels*pixel_pitch_mm))    # total size of the image       (mm)
 
         ''' We will set the common variables last because other variables depend on some of them '''
         # VARIABLE                                                DESCRIPTION                   UNITS
@@ -341,75 +385,75 @@ class ConeGeometryJasper2(Geometry):
             self.offDetector = np.array((0, 0))                 # Offset of Detector            (mm)
             self.rotDetector = np.array((0, 0, 0))
             # Auxiliary
-            self.accuracy = 0.5                                 # Accuracy of FWD proj          (vx/sample)
+            # Accuracy of FWD proj          (vx/sample)
+            self.accuracy = 0.5
             # Mode
             self.mode = 'cone'                                  # parallel, cone'''
 
 
-def solve_for_y(poly_coeffs, y):
-    pc = poly_coeffs.copy()
-    pc[-1] -= y
-    return np.roots(pc)
+def find_optimal_offset(gReconParams: dict, projections, angles, detector_x_offsets, detector_y_offsets, stage_offset=0.0, search_range=70):
+    ''' TODO Replace this! It does not work
 
+    This function takes quite a while, which can probably be optimized.
+    On the other hand, we only have to do this once per scan setup, and then store the value for later use.
+    '''
 
-# def find_optimal_offset(gReconParams: dict, projections, angles, detector_x_offsets, detector_y_offsets, stage_offset=0, search_range=70):
-#     ''' TODO Replace this! It does not work
+    projection0 = median_filter(projections[0, :, :], 5)
+    projection180 = median_filter(np.flip(projections[round(projections.shape[0]/2)-1, :, :], 1), 5)
+    print(detector_x_offsets[0], detector_x_offsets[round(projections.shape[0]/2)-1])
+    print(detector_y_offsets[0], detector_y_offsets[round(projections.shape[0]/2)-1])
 
-#     This function takes quite a while, which can probably be optimized.
-#     On the other hand, we only have to do this once per scan setup, and then store the value for later use.
-#     '''
+    shift, error, diffphase = phase_cross_correlation(projection0, projection180,
+                                                      upsample_factor=100)
 
-#     projection0 = projections[0, :, :]
-#     projection180 = np.flip(projections[round(projections.shape[0]/2)-1, :, :], 1)
+    estimate = -shift.item(1)/2
+    print(estimate)
 
-#     shift, error, diffphase = phase_cross_correlation(projection0, projection180,
-#                                                       upsample_factor=100)
+    #########################################
+   # estimate = 0.47/gReconParams['pixel_pitch']  # px
+    ##########################################
+    if stage_offset != 0.0:
+        estimate = stage_offset/gReconParams['pixel_pitch']  # px
+    geom = ConeGeometryJasper2(gReconParams, high_quality=False)
+    # we should avoid pixels from the cross of the detector
+    yshift = 3
+    # we also need to take into account that detector motion up to 5 pixels could have been used during the acquisition
+    projections_small = projections[:, int(
+        projections.shape[1]/2)-6-yshift:int(projections.shape[1]/2)+5-yshift, :]
+    projections_small = median_filter_projection_set(projections_small)
+    max_value = -9999
+    opt_shift = -99
+    cnt = 0
+    xvalues = []
+    yvalues = []
 
-#     estimate = -shift.item(1)/2
-#     print(estimate)
-#     #########################################
-#     # estimate = 4.9 # px
-#     ##########################################
+    for i in trange(int(estimate*10) - search_range, int(estimate*10) + search_range, 1):
+        # note that the detector x and y axis are opposite the x and y coordinate system of the geometry
+        geom.offDetector = np.vstack(
+            (detector_y_offsets, detector_x_offsets+(i/10) * gReconParams['pixel_pitch'])).T
+        geom.rotDetector = np.array(gReconParams['detector_rotation'])
+        geom.DSD = gReconParams['distance_source_detector']
+        # stageoffset = 0
+        geom.DSO = geom.DSD - gReconParams['distance_object_detector']  # - stageoffset
 
-#     geom = ConeGeometryJasper(gReconParams, high_quality=False)
-#     # we should avoid pixels from the cross of the detector
-#     yshift = 3
-#     # we also need to take into account that detector motion up to 5 pixels could have been used during the acquisition
-#     projections_small = projections[:, int(
-#         projections.shape[1]/2)-6-yshift:int(projections.shape[1]/2)+5-yshift, :]
+        imgfdk = algs.fdk(projections_small, geom, angles)
+        im = imgfdk[0, :, :].astype(np.float32)
+        dft = cv2.dft(im, flags=cv2.DFT_COMPLEX_OUTPUT)
+        dft_shift = np.fft.fftshift(dft)
 
-#     max_value = -9999
-#     opt_shift = -99
-#     cnt = 0
-#     xvalues = []
-#     yvalues = []
+        magnitude_spectrum = 20*np.log(cv2.magnitude(dft_shift[:, :, 0], dft_shift[:, :, 1]))
+        value = np.mean(magnitude_spectrum)
+        if value > max_value:
+            max_value = value
+            opt_shift = i
+        xvalues.append((i/10) * gReconParams['pixel_pitch'])
+        yvalues.append(value)
 
-#     for i in trange(int(estimate*100) - search_range, int(estimate*100) + search_range, 1):
-#         # note that the detector x and y axis are opposite the x and y coordinate system of the geometry
-#         geom.offDetector = np.vstack((detector_y_offsets, detector_x_offsets+(i/100) * gReconParams['pixel_pitch'])).T
-#         geom.rotDetector = np.array(gReconParams['detector_rotation'])
-#         geom.DSD = gReconParams['distance_source_detector']
-#         # stageoffset = 0
-#         geom.DSO = geom.DSD - gReconParams['distance_object_detector'] # - stageoffset
-
-#         imgfdk = algs.fdk(projections_small, geom, angles)
-#         im = imgfdk[0, :, :].astype(np.float32)
-#         dft = cv2.dft(im, flags=cv2.DFT_COMPLEX_OUTPUT)
-#         dft_shift = np.fft.fftshift(dft)
-
-#         magnitude_spectrum = 20*np.log(cv2.magnitude(dft_shift[:, :, 0], dft_shift[:, :, 1]))
-#         value = np.mean(magnitude_spectrum)
-#         if value > max_value:
-#             max_value = value
-#             opt_shift = i
-#         xvalues.append((i/100) * gReconParams['pixel_pitch'])
-#         yvalues.append(value)
-
-#     # plt.xlabel('X values')
-#     # plt.ylabel('Y values')
-#     # plt.scatter(xvalues, yvalues)
-#     # plt.show()
-#     return (opt_shift/100) * gReconParams['pixel_pitch']
+    plt.xlabel('X values')
+    plt.ylabel('Y values')
+    plt.scatter(xvalues, yvalues)
+    plt.show()
+    return (opt_shift/10) * gReconParams['pixel_pitch']
 
 
 def make_Nifti1Image(array, voxel_size: float):
@@ -427,6 +471,8 @@ def recon_scan(gReconParams: dict, projections, angles, detector_x_offsets, dete
     geometry.rotDetector = np.array(gReconParams['detector_rotation'])
     geometry.DSD = gReconParams['distance_source_detector']
     geometry.DSO = geometry.DSD - gReconParams['distance_object_detector']
+
+    print('dsd: ', geometry.DSD, 'dso: ', geometry.DSO)
 
     # number of voxels              (vx)
     geometry.nVoxel = np.array(gReconParams['recon_voxels'])
@@ -464,6 +510,8 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
     exp_time = []
     th0_list = []
     th1_list = []
+    th0_dac_list = []
+    th1_dac_list = []
     spectral_projs_th0 = []
     spectral_open_th0 = []
     spectral_projs_th1 = []
@@ -502,9 +550,13 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
 
                 th0_keV = folder_string[0:folder_string.find('_')]
                 th1_keV = folder_string[folder_string.find('_')+1:]
-
+                th0_dacs, th1_dacs = get_dac_settings(scan_json)
+                th0_dac_list.append(th0_dacs)
+                th1_dac_list.append(th1_dacs)
                 exp_time.append(get_exposure_time_projection(scan_json))
             exp_time = np.asarray(exp_time)
+            th0_dac_list = np.asarray(th0_dac_list)
+            th1_dac_list = np.asarray(th1_dac_list)
 
         else:
             print(f'Making new numpy files, should take ~4.5 minutes. At least one file was missing :( ')
@@ -514,18 +566,34 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
                     base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
                 scan_json = os.path.join(
                     scan_folder, dashboard['thresholdscan'][i]['projections_json'])
-                open_image_json = scan_json
+                if 'openimagesfolder' in dashboard:
+                    open_image_folder = os.path.join(
+                        base_folder, dashboard['thresholdscan'][i]['openimagesfolder'])
+                else:
+                    open_image_folder = scan_folder
+                if 'openimages_json' in dashboard:
+                    open_image_json = os.path.join(
+                        open_image_folder, dashboard['thresholdscan'][i]['openimages_json'])
+                else:
+                    open_image_json = scan_json
+
                 folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
                 th0_keV = folder_string[0:folder_string.find('_')]
                 th1_keV = folder_string[folder_string.find('_')+1:]
                 exp_time.append(get_exposure_time_projection(scan_json))
+
                 th0_list.append(float(th0_keV))
                 th1_list.append(float(th1_keV))
+                th0_keV = folder_string[0:folder_string.find('_')]
+                th1_keV = folder_string[folder_string.find('_')+1:]
 
+                th0_dacs, th1_dacs = get_dac_settings(scan_json)
+                th0_dac_list.append(th0_dacs)
+                th1_dac_list.append(th1_dacs)
                 projs_th0 = projectionsloader(
-                    scan_json, th0=True, badpixelcorr=False, medianfilter=False, fillgap=False)
+                    scan_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
                 openimg_th0 = openimgloader(
-                    open_image_json, th0=True, badpixelcorr=False, medianfilter=False, fillgap=False)
+                    open_image_json, th0=True, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
                 projs_th1 = projectionsloader(
                     scan_json, th0=False, badpixelcorr=gReconParams['bad_pixel_correction'], medianfilter=gReconParams['median_filter'], fillgap=gReconParams['fill_gap'])
                 openimg_th1 = openimgloader(
@@ -542,7 +610,8 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
             exp_time = np.asarray(exp_time)
             th0_list = np.asarray(th0_list)
             th1_list = np.asarray(th1_list)
-
+            th0_dac_list = np.asarray(th0_dac_list)
+            th1_dac_list = np.asarray(th1_dac_list)
             np.save(os.path.join(results_folder, 'projs_stack_th0.npy'), spectral_projs_th0)
             np.save(os.path.join(results_folder, 'open_stack_th0.npy'), spectral_open_th0)
             np.save(os.path.join(results_folder, 'projs_stack_th1.npy'), spectral_projs_th1)
@@ -554,7 +623,7 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
         z_offset = get_samplestage_z_offset(scan_json)
         detector_x_offsets, detector_y_offsets = get_detector_offsets(scan_json)
 
-        return spectral_projs_th0, spectral_open_th0, spectral_projs_th1, spectral_open_th1, th0_list, th1_list, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets
+        return spectral_projs_th0, spectral_open_th0, spectral_projs_th1, spectral_open_th1, th0_list, th1_list, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets, th0_dac_list, th1_dac_list
     else:
         return None
 
@@ -598,54 +667,214 @@ def calculate_mean_of_non_cross_pixels(gReconParams: dict, arr: np.ndarray, idx:
     return mean
 
 
-def generate_dac_values(gReconParams: dict, open_mean_th: np.ndarray, energy_list: List[float], plot: bool = False):
-    def power(my_list, pow):
-        return np.array([x**pow for x in my_list])
+def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
 
-    assert isinstance(gReconParams, dict)
-    assert len(open_mean_th.shape) == 3  # DAC, x/y, y/x
-    assert open_mean_th.shape[0] > 1
-    assert open_mean_th.shape[1] % 256 == 0 and open_mean_th.shape[2] % 256 == 0
-    assert len(energy_list) >= 1
-    assert isinstance(energy_list[0], float)
+    def power(arr: np.ndarray, pow: int) -> np.ndarray:
+        return np.array([x**pow for x in arr])
+    
+    def solve_poly_for_x(poly_coeffs: np.ndarray, y: float) -> np.ndarray:
+        pc = poly_coeffs.copy()
+        pc[-1] -= y
+        return np.roots(pc)
+    
+    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: list) -> np.ndarray:
+        # assert isinstance(dac_per_chip_list, np.ndarray)
+        # assert dac_per_chip_list.ndim == 2 # Always N X 4, at least 8 thresholds should have been taken...
+        # assert len(dac_per_chip_list[0]) == 4 # Always 4 chips
 
-    # energies = np.zeros((gReconParams['pixels'], gReconParams['pixels']))
-    pixel_count_offsets = np.zeros(
-        (len(energy_list), gReconParams['pixels'], gReconParams['pixels']))
-    regression_out = np.zeros(
-        (3, gReconParams['pixels'], gReconParams['pixels']))
+        if (i < half_pixels and j < half_pixels):
+            return dac_per_chip_list[:, chip_indices[0]]
+        elif (i < half_pixels and j >= half_pixels):
+            return dac_per_chip_list[:, chip_indices[1]]
+        elif (i >= half_pixels and j < half_pixels):
+            return dac_per_chip_list[:, chip_indices[2]]
+        else:
+            return dac_per_chip_list[:, chip_indices[3]]
 
-    for i in trange(0, open_mean_th.shape[1]):
-        for j in range(0, open_mean_th.shape[2]):
-            y_values = open_mean_th[:, i, j]
-            fit_params, _, _, _, _ = np.polyfit(energy_list, y_values, 2, full=True)
-            # energy_keV = solve_for_y(fit_params, np.mean(y_values))[1]
-            # Supersample so we do not get artifacts - no jagged lines, only smooth lines :)
-            fit_x = np.linspace(energy_list[0], energy_list[-1], len(energy_list))
+    assert isinstance(gReconParams, dict), gReconParams
+    assert isinstance(open_mean_all_thr, np.ndarray)
+    assert isinstance(dac_list_all_chips, np.ndarray)
+    
+    assert open_mean_all_thr.ndim == 3, open_mean_all_thr.ndim  # DAC, x/y, y/x
+    assert open_mean_all_thr.shape[0] > 1, open_mean_all_thr.shape
+    assert open_mean_all_thr.shape[1] % 256 == 0 and open_mean_all_thr.shape[2] % 256 == 0, open_mean_all_thr.shape
+    
+    assert dac_list_all_chips.ndim == 2 # Always N X 4
+    assert dac_list_all_chips.shape[0] >= 8 # N thresholds (DAC units) scanned over / acquired simultaneously - at least 8 should have been measured...
+    assert dac_list_all_chips.shape[1] == 4 # Always 4 chips
+    
 
-            y_poly_fit = (fit_params[0]*power(fit_x, 2)) + \
-                (fit_params[1]*power(fit_x, 1)) + fit_params[2]
+    half_pixels = gReconParams['pixels'] // 2
+    dac_correct = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']))
+    open_img_out = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']), dtype=np.float32)
+    chip_indices = (0, 1, 2, 3) # TL, TR, BR, BL    Dexter = (0, 1, 2, 3)    Serval UP orientation = (2, 3, 0, 1)
 
-            regression_out[:, i, j] = fit_params
+    a0 = 0
+    a1 = (gReconParams['pixels'] // 2) - 1 # 255 for 512 pixels
+    a2 = (gReconParams['pixels'] // 2) + 1 # 257 for 512 pixels
+    a3 = gReconParams['pixels']
+    mean = np.zeros((len(dac_list_all_chips)))
 
-            if plot:
-                plt.xlabel('Energy (kev)')
-                plt.ylabel('Counts ()')
-                plt.title(f'Pixel = {i}, {j}')
-                # plt.scatter(energy_list, y_values, label='raw input')
-                plt.errorbar(energy_list, y_values, np.sqrt(y_values), fmt='')
-                plt.plot(fit_x, y_poly_fit, label='fit')
-                plt.legend()
-                plt.show()
-            ''' If the calculated DAC value is outside the reasonable range, we set it to the mean value effectively.
+    for dac in trange(0,len(dac_list_all_chips)): # assuming that dac_list_all_chips is just for either th0 or th1
+        mean[dac] = 0.25 * (
+            np.mean(open_mean_all_thr[dac, a0:a1, a0:a1]) +
+            np.mean(open_mean_all_thr[dac, a0:a1, a2:a3]) +
+            np.mean(open_mean_all_thr[dac, a2:a3, a0:a1]) +
+            np.mean(open_mean_all_thr[dac, a2:a3, a2:a3])
+        )   
+        # print(f'DAC = {dac_list_all_chips[dac]}, mean = {mean[dac]}')
+
+    for i in trange(0, open_mean_all_thr.shape[1]):
+        for j in range(0, open_mean_all_thr.shape[2]):
+            x_dacs_of_this_chip = get_chip_dac_from_array_using_orientation(dac_list_all_chips, i, j, half_pixels, chip_indices)
+            y_counts = open_mean_all_thr[:, i, j]
+            assert x_dacs_of_this_chip.ndim == 1, (x_dacs_of_this_chip.ndim, x_dacs_of_this_chip)
+            assert len(x_dacs_of_this_chip) == len(y_counts), (len(x_dacs_of_this_chip), len(y_counts))
+
+            if poly_order == 0:
+                raise NotImplementedError("To be implemented")
                 
-                I am not sure this is correct, we should pass it as a NaN and correct for it later...
-            '''
-            # if (energy_keV > energy_list[-1]*2) or (energy_keV < energy_list[0]/2):
-            # energy_keV = np.NaN
-            # energies[i, j] = energy_keV
-            pixel_count_offsets[:, i, j] = y_values - y_poly_fit
-    return pixel_count_offsets
+            if poly_order == 1:
+                poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, np.log(y_counts), poly_order, w=np.sqrt(x_dacs_of_this_chip), full=True)
+                for dac in range(0, len(dac_list_all_chips)):
+                    poly_roots = solve_poly_for_x(poly_coeffs, np.log(mean[dac]))
+                    if poly_roots.shape[0] == 0:
+                        dac_corr = np.NaN # x_chip_dac[dac]
+                    else:
+                        dac_corr = poly_roots[0]
+                    if (dac_corr > (x_dacs_of_this_chip[dac]*2)) or (dac_corr < (x_dacs_of_this_chip[dac]/2)):
+                        dac_corr = np.NaN # x_chip_dac[dac]
+
+                    dac_correct[dac, i, j] = dac_corr
+                ''' TODO are the order of these coefficients correct??? '''
+                open_img_out[:, i, j] = np.exp(poly_coeffs[1]) * np.exp(poly_coeffs[0]*dac_corr)
+            
+            elif poly_order == 2:
+                poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, y_counts, poly_order, full=True)
+                for dac in range(0, len(dac_list_all_chips)):
+                    poly_roots = solve_poly_for_x(poly_coeffs, mean[dac])
+                    if poly_roots.shape[0] == 0:
+                        dac_corr = np.NaN # x_chip_dac[dac]
+                    else:
+                        dac_corr = poly_roots[1]
+                    if (dac_corr > (x_dacs_of_this_chip[dac]*2)) or (dac_corr < (x_dacs_of_this_chip[dac]/2)):
+                        dac_corr = np.NaN # x_chip_dac[dac]
+
+                    dac_correct[dac, i, j] = dac_corr
+                open_img_out[:, i, j] = (poly_coeffs[0] * dac_corr**2) + (poly_coeffs[1]*dac_corr) + poly_coeffs[2]
+            
+            else:
+                raise NotImplementedError("To be implemented...?")
+
+            if plot and i < 1 and j < 1:
+                if poly_order == 0:
+                    raise NotImplementedError
+                elif poly_order == 1:
+                    raise NotImplementedError
+                elif poly_order == 2:
+                    # Supersample so we do not get artifacts - no jagged lines, only smooth lines :)
+                    fit_x = np.linspace(x_dacs_of_this_chip[0], x_dacs_of_this_chip[-1], len(x_dacs_of_this_chip))
+                    y_poly_fit = (poly_coeffs[0]*power(fit_x, 2)) + \
+                        (poly_coeffs[1]*power(fit_x, 1)) + poly_coeffs[2]
+                    plt.xlabel('Threshold (DAC)')
+                    plt.ylabel('Counts ()')
+                    plt.title(f'Pixel = {i}, {j}')
+                    
+                    plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), fmt='', label='Raw counts')
+                    plt.plot(dac_correct[:, i, j], mean, marker='+', markersize=10) # zero is added for the frist dac to be displayed
+                    plt.plot(fit_x, y_poly_fit, label='fit - poly order 2')
+
+                    plt.legend()
+                    plt.show()
+
+    if open_img_path != None:
+        for dac in tqdm(dac_list_all_chips):
+            sitk.WriteImage(sitk.GetImageFromArray(open_img_out), os.path.join(open_img_path, f'corrected_open_img_{dac}.nii'))
+
+    return dac_correct
+
+    # for i in trange(0, open_mean_all_thr.shape[1]):
+    #     for j in range(0, open_mean_all_thr.shape[2]):
+    #         x_dacs_of_this_chip = get_chip_dac_from_array_using_orientation(dac_list_all_chips, i, j, half_pixels, chip_indices)
+    #         y_counts = open_mean_all_thr[:, i, j]
+    #         assert x_dacs_of_this_chip.ndim == 1, (x_dacs_of_this_chip.ndim, x_dacs_of_this_chip)
+    #         assert len(x_dacs_of_this_chip) == len(y_counts), (len(x_dacs_of_this_chip), len(y_counts))
+
+    #         if poly_order == 0:
+    #             raise NotImplementedError("To be implemented")
+
+    #         if poly_order == 1:
+    #             poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, np.log(y_counts), poly_order, w=np.sqrt(x_dacs_of_this_chip), full=True)
+    #             poly_roots = solve_poly_for_x(poly_coeffs, np.log(mean_of_non_cross_pixels))
+    #             if poly_roots.shape[0] == 0:
+    #                 dac_corr = np.NaN # x_chip_dac[dac_index]
+    #             else:
+    #                 dac_corr = poly_roots[0]
+                
+    #             ''' TODO are the order of these coefficients correct??? '''
+    #             open_img_out[:, i, j] = np.exp(poly_coeffs[1]) * np.exp(poly_coeffs[0]*dac_corr)
+
+    #         elif poly_order == 2:
+    #             poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, y_counts, poly_order, full=True)
+    #             poly_roots = solve_poly_for_x(poly_coeffs, mean_of_non_cross_pixels)
+    #             if poly_roots.shape[0] == 0:
+    #                 dac_corr = np.NaN # x_chip_dac[dac_index]
+    #             else:
+    #                 dac_corr = poly_roots[1]
+           
+    #             open_img_out[:, i, j] = (poly_coeffs[0] * dac_corr**2) + (poly_coeffs[1]*dac_corr) + poly_coeffs[2]
+    #         else:
+    #             raise NotImplementedError("To be implemented...?")
+            
+    #         if plot and i < 1 and j < 1:
+    #             if poly_order == 0:
+    #                 raise NotImplementedError
+    #             elif poly_order == 1:
+    #                 raise NotImplementedError
+    #             elif poly_order == 2:
+    #                 # Supersample so we do not get artifacts - no jagged lines, only smooth lines :)
+    #                 fit_x = np.linspace(x_dacs_of_this_chip[0], x_dacs_of_this_chip[-1], len(x_dacs_of_this_chip))
+    #                 y_poly_fit = (poly_coeffs[0]*power(fit_x, 2)) + \
+    #                     (poly_coeffs[1]*power(fit_x, 1)) + poly_coeffs[2]
+    #                 plt.xlabel('Threshold (DAC)')
+    #                 plt.ylabel('Counts ()')
+    #                 plt.title(f'Pixel = {i}, {j}')
+                    
+    #                 plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), fmt='', label='Raw counts')
+    #                 plt.plot(dac_corr, mean_of_non_cross_pixels, marker='+', markersize=10)
+    #                 plt.plot(fit_x, y_poly_fit, label='fit - poly order 2')
+
+    #                 plt.legend()
+    #                 plt.show()
+            
+    #         ''' If the calculated DAC value is outside the reasonable range,
+    #         we pass it as a NaN and correct for it later...
+    #         '''
+
+    #         if (dac_corr > (x_dacs_of_this_chip[dac_index]*2)) or (dac_corr < (x_dacs_of_this_chip[dac_index]/2)):
+    #             dac_corr = np.NaN # x_chip_dac[dac_index]
+
+    #         dac_correct[i, j] = dac_corr
+
+    # if open_img_path != None:
+    #     sitk.WriteImage(sitk.GetImageFromArray(open_img_out), os.path.join(open_img_path, 'corrected_open_img_'+str(dac_index)+'.nii'))
+
+    # return dac_correct
+
+
+def fit_proj_data_values(data_set: np.ndarray, dacs_list: np.ndarray, polyorder = 2):
+
+    assert len(data_set.shape) == 4  # DAC, proj, x, y
+    fit_array = data_set.reshape(data_set.shape[0], -1)
+
+    if polyorder == 1:
+        regressions, res, _, _, _ = np.polyfit(dacs_list, np.log(fit_array), polyorder, w=np.sqrt(dacs_list), full=True)
+    elif polyorder == 2:
+        regressions, res, _, _, _ = np.polyfit(dacs_list, fit_array, polyorder, full=True)
+
+    regressions = regressions.reshape(polyorder+1, data_set.shape[1], data_set.shape[2], data_set.shape[3])
+    residuals = res.reshape(data_set.shape[1], data_set.shape[2], data_set.shape[3])
+    return regressions, residuals
 
 
 def generate_bad_pixel_corrected_array(ofc, gReconParams):
@@ -658,6 +887,8 @@ def generate_bad_pixel_corrected_array(ofc, gReconParams):
     half = np.int32(badmap.shape[0]/2)
     badmap[half-2:half+1] = 0
     badmap[:, half-2:half+1] = 0
+
+    ''' TODO These might be too aggressive, review... '''
     badmap[meanmap > 0.2] = 0
     badmap[stdmap > 0.05] = 0
     ofc_bpc = apply_badmap_to_projections(ofc, badmap)

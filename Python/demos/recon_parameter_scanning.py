@@ -39,7 +39,7 @@ if __name__ == "__main__":
 
     # Make folders and load files for recon
     drive = 'f:\\'
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220805_tumourWhateverBreast')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
 
     # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....
     # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x= 5.02 y=-0.24
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         output_folder, f'th{th}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
 
     if scan_over_a_paramter:
-        r = np.linspace(-.36, -.18, 41)
+        r = np.linspace(-1, 2, 31)
         unit = 'mm'
         # unit = 'degrees'
         for i in trange(0, len(r)):

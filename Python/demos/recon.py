@@ -96,7 +96,7 @@ if __name__ == "__main__":
     '''
     open_mean_all_thresholds = list()
     combined_energy_list = list()
-    # mean_of_thresholds = list()
+    
     for idx in range(len(th0_list)):
         open_mean_all_thresholds.append(open_mean_th0[idx, :, :])
         open_mean_all_thresholds.append(open_mean_th1[idx, :, :])
@@ -108,46 +108,32 @@ if __name__ == "__main__":
     ofc_th0 = np.empty_like(spectral_projs_th0)
     ofc_th1 = np.empty_like(spectral_projs_th0)
 
-    pixel_count_offsets = s.save_and_or_load_npy_files(
-        results_folder, f'pixel_count_offsets.npy', lambda: s.generate_dac_values(gReconParams, open_mean_all_thresholds, combined_energy_list, plot=True))
+    correct_dacs = s.save_and_or_load_npy_files(
+        results_folder, f'correct_dacs_from_open_images.py', lambda: s.generate_correct_dac_values(gReconParams, open_mean_all_thresholds, combined_energy_list, plot=True, poly_order=2, open_img_path=results_folder))
 
-    plt.imshow(pixel_count_offsets[0, :, :])
+    plt.imshow(correct_dacs[0, :, :])
     plt.show()
     plt.imshow(spectral_projs_th0[0, 0, :, :])
     plt.show()
     plt.imshow(ofc_th0[0, 0, :, :])
     plt.show()
 
-    # for idx in range(0, len(th0_list)):
-    #     for p in range(ofc_th0.shape[0]):
-
-    #         ofc_th1[idx, p, :, :] = - \
-    #             np.log(spectral_projs_th1[idx, p, :, :] / open_mean_th1[idx, :, :])
-    #         ofc_th0[idx, p, :, :] = - \
-    #             np.log(spectral_projs_th0[idx, p, :, :] / open_mean_th0[idx, :, :])
-    #         ofc_th1[idx, p, :, :] = - \
-    #             np.log(spectral_projs_th1[idx, p, :, :] / open_mean_th1[idx, :, :])
-
     idx = 0
-    for energy in range(0, len(combined_energy_list), 2):
+    for dac_index in range(0, len(combined_energy_list), 2):
         for p in range(ofc_th0.shape[0]):
-            ofc_th0[idx, p, :, :] = spectral_projs_th0[idx,
-                                                       p, :, :] - pixel_count_offsets[energy, :, :]
-            ofc_th0[idx, p, :, :] = - \
-                np.log(ofc_th0[idx, p, :, :] / open_mean_th0[idx, :, :])
-            ofc_th1[idx, p, :, :] = spectral_projs_th1[idx,
-                                                       p, :, :] - pixel_count_offsets[energy + 1, :, :]
-            ofc_th1[idx, p, :, :] = - \
-                np.log(ofc_th1[idx, p, :, :] / open_mean_th1[idx, :, :])
+            ofc_th0[idx, p, :, :] = spectral_projs_th0[idx, p, :, :] - correct_dacs[dac_index, :, :]
+            ofc_th0[idx, p, :, :] = -np.log(ofc_th0[idx, p, :, :] / open_mean_th0[idx, :, :])
+            ofc_th1[idx, p, :, :] = spectral_projs_th1[idx, p, :, :] - correct_dacs[dac_index + 1, :, :]
+            ofc_th1[idx, p, :, :] = -np.log(ofc_th1[idx, p, :, :] / open_mean_th1[idx, :, :])
 
         plt.imshow(ofc_th0[0, 180, :, :])
         plt.show()
 
-        print(f'Doing recon finally! Mean energy = {combined_energy_list[energy]} keV')
+        print(f'Doing recon finally! Mean energy = {combined_energy_list[dac_index]} keV')
         img, geom = s.recon_scan(gReconParams, ofc_th0[idx, :, :, :], angles, detector_x_offsets,
                                  detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, True)
         ni_img = nib.Nifti1Image(img, np.eye(4))
         ni_img = s.make_Nifti1Image(img, geom.dVoxel)
         s.save_array(results_folder, 'Recon_'
-                     + str(combined_energy_list[energy])+'OFC_NEWBOIII.nii', ni_img)
+                     + str(combined_energy_list[dac_index])+'OFC_NEWBOIII.nii', ni_img)
         idx += 1
