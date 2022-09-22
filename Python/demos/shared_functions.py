@@ -17,6 +17,7 @@ from skimage.registration import phase_cross_correlation
 import cv2
 from joblib import Parallel, delayed
 import SimpleITK as sitk
+from lmfit.models import GaussianModel
 
 import matplotlib.pyplot as plt
 
@@ -667,7 +668,7 @@ def calculate_mean_of_non_cross_pixels(gReconParams: dict, arr: np.ndarray, idx:
     return mean
 
 
-def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
+def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, chip_indices: list[int], plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
 
     def power(arr: np.ndarray, pow: int) -> np.ndarray:
         return np.array([x**pow for x in arr])
@@ -677,7 +678,7 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
         pc[-1] -= y
         return np.roots(pc)
     
-    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: list) -> np.ndarray:
+    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: list[int]) -> np.ndarray:
         # assert isinstance(dac_per_chip_list, np.ndarray)
         # assert dac_per_chip_list.ndim == 2 # Always N X 4, at least 8 thresholds should have been taken...
         # assert len(dac_per_chip_list[0]) == 4 # Always 4 chips
@@ -700,23 +701,23 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
     assert open_mean_all_thr.shape[1] % 256 == 0 and open_mean_all_thr.shape[2] % 256 == 0, open_mean_all_thr.shape
     
     assert dac_list_all_chips.ndim == 2 # Always N X 4
-    assert dac_list_all_chips.shape[0] >= 8 # N thresholds (DAC units) scanned over / acquired simultaneously - at least 8 should have been measured...
+    assert dac_list_all_chips.shape[0] >= 2 # N thresholds (DAC units) scanned over / acquired simultaneously - at least 8 should have been measured...
     assert dac_list_all_chips.shape[1] == 4 # Always 4 chips
     
 
     half_pixels = gReconParams['pixels'] // 2
     dac_correct = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']))
     open_img_out = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']), dtype=np.float32)
-    chip_indices = (0, 1, 2, 3) # TL, TR, BR, BL    Dexter = (0, 1, 2, 3)    Serval UP orientation = (2, 3, 0, 1)
+    # chip_indices = (0, 1, 2, 3) # TL, TR, BR, BL    Dexter = (0, 1, 2, 3)    Serval UP orientation = (2, 3, 0, 1)
 
     a0 = 0
     a1 = (gReconParams['pixels'] // 2) - 1 # 255 for 512 pixels
     a2 = (gReconParams['pixels'] // 2) + 1 # 257 for 512 pixels
     a3 = gReconParams['pixels']
-    mean = np.zeros((len(dac_list_all_chips)))
+    mean_per_dac_list = np.zeros((len(dac_list_all_chips)))
 
     for dac in trange(0,len(dac_list_all_chips)): # assuming that dac_list_all_chips is just for either th0 or th1
-        mean[dac] = 0.25 * (
+        mean_per_dac_list[dac] = 0.25 * (
             np.mean(open_mean_all_thr[dac, a0:a1, a0:a1]) +
             np.mean(open_mean_all_thr[dac, a0:a1, a2:a3]) +
             np.mean(open_mean_all_thr[dac, a2:a3, a0:a1]) +
@@ -733,11 +734,15 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
 
             if poly_order == 0:
                 raise NotImplementedError("To be implemented")
+                # mod = GaussianModel()
+                # pars = mod.guess(y, x=x)
+                # out = mod.fit(y, pars, x=x)
+
                 
             if poly_order == 1:
                 poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, np.log(y_counts), poly_order, w=np.sqrt(x_dacs_of_this_chip), full=True)
                 for dac in range(0, len(dac_list_all_chips)):
-                    poly_roots = solve_poly_for_x(poly_coeffs, np.log(mean[dac]))
+                    poly_roots = solve_poly_for_x(poly_coeffs, np.log(mean_per_dac_list[dac]))
                     if poly_roots.shape[0] == 0:
                         dac_corr = np.NaN # x_chip_dac[dac]
                     else:
@@ -752,13 +757,16 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
             elif poly_order == 2:
                 poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, y_counts, poly_order, full=True)
                 for dac in range(0, len(dac_list_all_chips)):
-                    poly_roots = solve_poly_for_x(poly_coeffs, mean[dac])
+                    poly_roots = solve_poly_for_x(poly_coeffs, mean_per_dac_list[dac])
                     if poly_roots.shape[0] == 0:
                         dac_corr = np.NaN # x_chip_dac[dac]
                     else:
                         dac_corr = poly_roots[1]
-                    if (dac_corr > (x_dacs_of_this_chip[dac]*2)) or (dac_corr < (x_dacs_of_this_chip[dac]/2)):
-                        dac_corr = np.NaN # x_chip_dac[dac]
+                    
+                    ''' This cutting is surprisingly bad. It could be useful with a much larger range.
+                    Probably should be statistics based... '''
+                    # if (dac_corr > (x_dacs_of_this_chip[dac]*2)) or (dac_corr < (x_dacs_of_this_chip[dac]/2)):
+                    #     dac_corr = np.NaN # x_chip_dac[dac]
 
                     dac_correct[dac, i, j] = dac_corr
                 open_img_out[:, i, j] = (poly_coeffs[0] * dac_corr**2) + (poly_coeffs[1]*dac_corr) + poly_coeffs[2]
@@ -781,7 +789,7 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
                     plt.title(f'Pixel = {i}, {j}')
                     
                     plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), fmt='', label='Raw counts')
-                    plt.plot(dac_correct[:, i, j], mean, marker='+', markersize=10) # zero is added for the frist dac to be displayed
+                    plt.plot(dac_correct[:, i, j], mean_per_dac_list, marker='+', markersize=10) # zero is added for the frist dac to be displayed
                     plt.plot(fit_x, y_poly_fit, label='fit - poly order 2')
 
                     plt.legend()
