@@ -65,3 +65,4 @@ MATLAB/mex_CUDA_win64.xml
 # Miscellaneous
 *.pdf
 *.pyd
+Python/dac_offset_stability_between_measurements/*
