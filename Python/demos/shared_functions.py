@@ -562,6 +562,24 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
         else:
             print(f'Making new numpy files, should take ~4.5 minutes. At least one file was missing :( ')
 
+            scan_folders = list()
+            files_per_folder = list()
+            # folder_sizes = list()
+            for i in tqdm(dashboard['thresholdscan']):
+                scan_folder = os.path.join(base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
+                n_files = (len([entry for entry in os.listdir(scan_folder) if os.path.isfile(os.path.join(scan_folder, entry))]))
+                scan_folders.append(scan_folder)
+                # folder_sizes.append(sum(entry.stat().st_size for entry in os.scandir(scan_folder)))
+                files_per_folder.append(n_files)
+                # if n_files == 1130:
+                #     print([entry for entry in os.listdir(scan_folder) if os.path.isfile(os.path.join(scan_folder, entry))])
+            print(scan_folders)
+            # print(folder_sizes)
+            print(files_per_folder)
+            # assert all( map(lambda f: f == folder_sizes[0], folder_sizes ) ), folder_sizes
+            assert all( map(lambda f: f == files_per_folder[0], files_per_folder ) ), files_per_folder
+            
+
             for i in tqdm(dashboard['thresholdscan']):
                 scan_folder = os.path.join(
                     base_folder, dashboard['thresholdscan'][i]['projectionsfolder'])
