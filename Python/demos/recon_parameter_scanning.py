@@ -34,12 +34,12 @@ if __name__ == "__main__":
     2. Scan over a parameter with one reconstruction each
 
     '''
-    scan_over_a_paramter = True
+    scan_over_a_paramter = False
     th = 0
 
     # Make folders and load files for recon
     drive = 'f:\\'
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20220929_Legoman_al_filter_100_um_variable_exposures')
 
     # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....
     # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x= 5.02 y=-0.24
@@ -50,7 +50,6 @@ if __name__ == "__main__":
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # Make a list of globals for the reconstruction setting, and log them in a json file
     gReconParams = dict()
 
     gReconParams['pixels'] = 512  # (pixels)
@@ -59,34 +58,33 @@ if __name__ == "__main__":
     gReconParams['median_filter'] = False
     gReconParams['bad_pixel_correction'] = True
     gReconParams['recon_voxels'] = (
-        gReconParams['pixels'], gReconParams['pixels'], gReconParams['pixels'])  # number of voxels (vx) # TODO Might be less than 1/2 or 1/4 ... of the number of pixels
-    gReconParams['distance_source_detector'] = 188.347  # 9+9+30+100+30+9+1.347 (mm)
-    gReconParams['z_stage_distance_mm'] = s.get_sample_z_from_first_scan_json(
-        base_json_file)  # Varies between 0 and 100 mm
-    gReconParams['distance_object_detector'] = gReconParams['z_stage_distance_mm'] + \
-        30+9+1.347  # (mm)
-
-    # 1.2  # gReconParams['pixels'] * gReconParams['pixel_pitch']
-    # a = gReconParams['pixels'] * gReconParams['pixel_pitch'] / (gReconParams['distance_source_detector'] / (
-    #     gReconParams['distance_source_detector']-gReconParams['distance_object_detector'])) / 10
-    # a = gReconParams['pixel_pitch']
-    DSD = gReconParams['distance_source_detector']
-    DSO = DSD - gReconParams['distance_object_detector']
-    a = 512 * 0.055 / (((DSD-DSO) / DSO) + 1)
-
-    gReconParams['recon_size'] = (a, a, a)  # 28.16 (mm)
-    gReconParams['detector_rotation'] = (math.radians(0.), 0., 0.)  # (mm)
+        gReconParams['pixels'], gReconParams['pixels'], gReconParams['pixels'])  # number of voxels (vx)
+    gReconParams['distance_source_detector'] = 188.090
+    gReconParams['z_stage_distance_mm'] = s.get_sample_z_from_first_scan_json(base_json_file) # Varies between 0 and 100 mm
+    gReconParams['distance_object_detector'] = 30 + \
+        gReconParams['z_stage_distance_mm'] + 9+0.055+1.035  # (mm)
+    gReconParams['detector_rotation'] = (math.radians(0.), math.radians(0.), math.radians(0.))  # (mm)
 
     assert gReconParams['z_stage_distance_mm'] < 100 and gReconParams['z_stage_distance_mm'] >= 0
+
+
+    DSD = gReconParams['distance_source_detector']
+    DSO = DSD - gReconParams['distance_object_detector']
+    a = gReconParams['pixels'] * gReconParams['pixel_pitch'] / (((DSD-DSO) / DSO) + 1)
+    gReconParams['recon_size'] = (a, a, a)
     print(gReconParams)
 
-    centre_of_rotation_offset_x_mm = 0.2
-    centre_of_rotation_offset_y_mm = -0.24  # Could be 0, not sure yet
+    centre_of_rotation_offset_x_mm = 0.1155
+    centre_of_rotation_offset_y_mm = 0.  # Could be 0, not sure yet
 
     ''' Load tiff files, transform a bit and save to numpy files.
     Load the files if they exist already '''
-    spectral_projs_th0, spectral_open_th0, _, _, _, _, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets = s.load_or_generate_data_arrays(
+    spectral_projs_th0, spectral_open_th0, _, _, _, _, exp_time, angles, z_offset, detector_x_offsets, detector_y_offsets, _, _ = s.load_or_generate_data_arrays(
         base_json_file, base_folder, output_folder, gReconParams)
+
+    if 'Legoman_al_filter_100_um_' in base_folder:
+        spectral_projs_th0 = np.flip(np.flip(spectral_projs_th0, axis=2), axis=3)
+        spectral_open_th0  = np.flip(np.flip(spectral_open_th0, axis=2), axis=3)
 
     open_mean_th0 = np.mean(spectral_open_th0, axis=1)
     open_mean_th0[0, :, :] = open_mean_th0[0, :, :]/exp_time[0]
@@ -97,20 +95,22 @@ if __name__ == "__main__":
         output_folder, f'th{th}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc, gReconParams))
 
     if scan_over_a_paramter:
-        r = np.linspace(-1, 2, 31)
-        unit = 'mm'
-        # unit = 'degrees'
+        r = np.linspace(-3, 3, 31)
+        # unit = 'mm'
+        unit = 'degrees'
         for i in trange(0, len(r)):
-            # gReconParams['detector_rotation'] = (math.radians(r[i]), 0., 0.)
+            # centre_of_rotation_offset_x_mm = r[i]
             # centre_of_rotation_offset_y_mm = r[i]
-            centre_of_rotation_offset_x_mm = r[i]
+            gReconParams['detector_rotation'] = (math.radians(r[i]), 0., 0.)
+            # gReconParams['detector_rotation'] = (0., math.radians(r[i]), 0.) # Precisely nothing!
+            # gReconParams['detector_rotation'] = (0., 0., math.radians(r[i])) # Precisely nothing!
 
-            a = 400
+            a = 200
             img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles,
                                         detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, False)
             # img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, :, :], angles,  detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm, True)
 
-            b = 512//2
+            b = gReconParams['pixels']//2
             img = Image.fromarray(img_th0[:, :, b])
             img.save(os.path.join(output_folder,
                                   '{:s}_{:0.4f}_{:s}.tiff'.format(str(i).zfill(6), r[i], unit)))
