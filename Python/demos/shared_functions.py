@@ -534,12 +534,12 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
             th0_list = np.load(os.path.join(results_folder, numpy_output_files[4]))
             th1_list = np.load(os.path.join(results_folder, numpy_output_files[5]))
 
-            assert spectral_projs_th0.size > 1  # 1 byte minimum
-            assert spectral_open_th0.size > 1  # 1 byte minimum
-            assert spectral_projs_th1.size > 1  # 1 byte minimum
-            assert spectral_open_th1.size > 1  # 1 byte minimum
-            assert th0_list.size > 1  # 1 byte minimum
-            assert th1_list.size > 1  # 1 byte minimum
+            assert spectral_projs_th0.size >= 1, spectral_projs_th0.size  # 1 byte minimum
+            assert spectral_open_th0.size >= 1, spectral_open_th0.size  # 1 byte minimum
+            assert spectral_projs_th1.size >= 1, spectral_projs_th1.size  # 1 byte minimum
+            assert spectral_open_th1.size >= 1, spectral_open_th1.size  # 1 byte minimum
+            assert th0_list.size >= 1, th0_list.size  # 1 byte minimum
+            assert th1_list.size >= 1, th1_list.size  # 1 byte minimum
 
             for i in tqdm(dashboard['thresholdscan']):
                 scan_folder = os.path.join(
