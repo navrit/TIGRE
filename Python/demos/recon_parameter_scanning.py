@@ -33,13 +33,15 @@ if __name__ == "__main__":
     1. Load 1 dataset of projections + open field images
     2. Scan over a parameter with one reconstruction each
 
+    TODO Optional argument for using detector motion
+
     '''
-    scan_over_a_paramter = False
+    scan_over_a_paramter = True
     th = 0
 
     # Make folders and load files for recon
     drive = 'f:\\'
-    base_folder = os.path.join(drive, 'jasper', 'data', '20220929_Legoman_al_filter_100_um_variable_exposures')
+    base_folder = os.path.join(drive, 'jasper', 'data', '20221003_Legoman_al_filter_100_um')
 
     # 20220822_ffpe_WhateverBreast        .... FILL ME IN ....
     # 20220822_Al_Phantom_Recon_Alignment det_rot=(0 to -0.5, 0, 0) x= 5.02 y=-0.24
@@ -96,16 +98,16 @@ if __name__ == "__main__":
 
     if scan_over_a_paramter:
         r = np.linspace(-3, 3, 31)
-        # unit = 'mm'
-        unit = 'degrees'
+        unit = 'mm'
+        # unit = 'degrees'
         for i in trange(0, len(r)):
-            # centre_of_rotation_offset_x_mm = r[i]
+            centre_of_rotation_offset_x_mm = r[i]
             # centre_of_rotation_offset_y_mm = r[i]
-            gReconParams['detector_rotation'] = (math.radians(r[i]), 0., 0.)
+            # gReconParams['detector_rotation'] = (math.radians(r[i]), 0., 0.)
             # gReconParams['detector_rotation'] = (0., math.radians(r[i]), 0.) # Precisely nothing!
             # gReconParams['detector_rotation'] = (0., 0., math.radians(r[i])) # Precisely nothing!
 
-            a = 200
+            a = 400
             img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, a:a+11, :], angles,
                                         detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, False)
             # img_th0, geo = s.recon_scan(gReconParams, ofc_bpc[:, :, :], angles,  detector_x_offsets, detector_y_offsets, centre_of_rotation_offset_y_mm, True)
