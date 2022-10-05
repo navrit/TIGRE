@@ -299,7 +299,7 @@ def main():
     ofc_th1 = np.empty_like(spectral_projs_th0)
 
     correct_dacs = s.save_and_or_load_npy_files(
-        results_folder, f'all_dac_values.py', lambda: generate_correct_dac_values(gReconParams, open_mean_all_thresholds, combined_x_list, chip_indices, slopes_per_pixel, intercepts_per_pixel, plot=True, poly_order=2, open_img_path=results_folder))
+        results_folder, f'all_dac_values.npy', lambda: generate_correct_dac_values(gReconParams, open_mean_all_thresholds, combined_x_list, chip_indices, slopes_per_pixel, intercepts_per_pixel, plot=True, poly_order=2, open_img_path=results_folder))
 
     plt.imshow(correct_dacs[0, :, :])
     plt.show()
