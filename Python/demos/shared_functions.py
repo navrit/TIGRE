@@ -792,7 +792,7 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
             else:
                 raise NotImplementedError("To be implemented...?")
 
-            if plot and i < 1 and j < 1:
+            if plot and i == 1 and j == 1:
                 if poly_order == 0:
                     raise NotImplementedError
                 elif poly_order == 1:
@@ -807,8 +807,8 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
                     plt.title(f'Pixel = {i}, {j}')
                     
                     plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), fmt='', label='Raw counts')
-                    plt.plot(dac_correct[:, i, j], mean_per_dac_list, marker='+', markersize=10) # zero is added for the frist dac to be displayed
-                    plt.plot(fit_x, y_poly_fit, label='fit - poly order 2')
+                    plt.plot(dac_correct[:, i, j], mean_per_dac_list, marker='+', markersize=10, label='Correct DAC based on open data') # zero is added for the first dac to be displayed
+                    plt.plot(fit_x, y_poly_fit, label='Fit - poly order 2')
 
                     plt.legend()
                     plt.show()
