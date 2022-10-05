@@ -217,6 +217,12 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
 
 
 def main():
+    ''' TODO Looks like the data is not correctly oriented or something - completely wrong reconstructions...
+        
+        Per pixel energy calibrations are integrated with interleaved thresholds (th0 + th1).
+        It is actually better than just using DAC units for the x axis.
+    '''
+
     drive = 'f:\\'
     # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
     # base_folder = os.path.join(drive, 'jasper', 'data', '20220825_LegoMan')
