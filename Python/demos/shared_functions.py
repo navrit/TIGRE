@@ -708,7 +708,7 @@ def calculate_mean_of_non_cross_pixels(gReconParams: dict, arr: np.ndarray, idx:
     return mean
 
 
-def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, chip_indices: list[int], plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
+def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, chip_indices: List[int], plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
 
     def power(arr: np.ndarray, pow: int) -> np.ndarray:
         return np.array([x**pow for x in arr])
@@ -718,7 +718,7 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
         pc[-1] -= y
         return np.roots(pc)
     
-    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: list[int]) -> np.ndarray:
+    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: List[int]) -> np.ndarray:
         # assert isinstance(dac_per_chip_list, np.ndarray)
         # assert dac_per_chip_list.ndim == 2 # Always N X 4, at least 8 thresholds should have been taken...
         # assert len(dac_per_chip_list[0]) == 4 # Always 4 chips
