@@ -103,25 +103,35 @@ def projectionsloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=Fal
 
     if os.path.exists(jsonfile):
         dirname = os.path.dirname(jsonfile)
+        json_file_name = os.path.basename(jsonfile)
         f = open(jsonfile)
         dashboard = json.load(f)
         totalfilelist = []
         if th0:
             for i in dashboard['projections']:
                 projectionlist = []
-                for j in dashboard['projections'][i]['filenames_th0']:
+                if json_file_name.split('_',4)[1].startswith('0'):
                     filename = os.path.join(
-                        dirname, dashboard['projections'][i]['filenames_th0'][j]['name'])
+                        dirname, dashboard['projections'][i]['filenames_th0'])
                     projectionlist.append(filename)
+                else:
+                    for j in dashboard['projections'][i]['filenames_th0']:
+                        filename = os.path.join(
+                            dirname, dashboard['projections'][i]['filenames_th0'][j]['name'])
+                        projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         else:
-
             for i in dashboard['projections']:
                 projectionlist = []
-                for j in dashboard['projections'][i]['filenames_th1']:
+                if json_file_name.split('_',4)[1].startswith('0'):
                     filename = os.path.join(
-                        dirname, dashboard['projections'][i]['filenames_th1'][j]['name'])
+                        dirname, dashboard['projections'][i]['filenames_th1'])
                     projectionlist.append(filename)
+                else:
+                    for j in dashboard['projections'][i]['filenames_th1']:
+                        filename = os.path.join(
+                            dirname, dashboard['projections'][i]['filenames_th1'][j]['name'])
+                        projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         f.close()
         with multiprocessing.Pool(60) as pool:
@@ -138,25 +148,35 @@ def openimgloader(jsonfile='', th0=True, badpixelcorr=True, medianfilter=False, 
 
     if os.path.exists(jsonfile):
         dirname = os.path.dirname(jsonfile)
-
+        json_file_name = os.path.basename(jsonfile)
         f = open(jsonfile)
         dashboard = json.load(f)
         totalfilelist = []
         if th0:
             for i in dashboard['openimages']:
                 projectionlist = []
-                for j in dashboard['openimages'][i]['filenames_th0']:
+                if json_file_name.split('_',4)[1].startswith('0'):
                     filename = os.path.join(
-                        dirname, dashboard['openimages'][i]['filenames_th0'][j]['name'])
+                        dirname, dashboard['openimages'][i]['filenames_th0'])
                     projectionlist.append(filename)
+                else:
+                    for j in dashboard['openimages'][i]['filenames_th0']:
+                        filename = os.path.join(
+                            dirname, dashboard['openimages'][i]['filenames_th0'][j]['name'])
+                        projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         else:
             for i in dashboard['openimages']:
                 projectionlist = []
-                for j in dashboard['openimages'][i]['filenames_th1']:
+                if json_file_name.split('_',4)[1].startswith('0'):
                     filename = os.path.join(
-                        dirname, dashboard['openimages'][i]['filenames_th1'][j]['name'])
+                        dirname, dashboard['openimages'][i]['filenames_th1'])
                     projectionlist.append(filename)
+                else:
+                    for j in dashboard['openimages'][i]['filenames_th1']:
+                        filename = os.path.join(
+                            dirname, dashboard['openimages'][i]['filenames_th1'][j]['name'])
+                        projectionlist.append(filename)
                 totalfilelist.append(projectionlist)
         f.close()
 
@@ -597,14 +617,16 @@ def load_or_generate_data_arrays(base_json_file, base_folder, results_folder, gR
                     open_image_json = scan_json
 
                 folder_string = dashboard['thresholdscan'][i]['projectionsfolder']
-                th0_keV = folder_string[0:folder_string.find('_')]
-                th1_keV = folder_string[folder_string.find('_')+1:]
+                if folder_string.startswith('0'):
+                    th0_keV = folder_string.split('_', 3)[1]
+                    th1_keV = folder_string.split('_', 3)[-1]
+                else:
+                    th0_keV = folder_string[0:folder_string.find('_')]
+                    th1_keV = folder_string[folder_string.find('_')+1:]
                 exp_time.append(get_exposure_time_projection(scan_json))
 
                 th0_list.append(float(th0_keV))
                 th1_list.append(float(th1_keV))
-                th0_keV = folder_string[0:folder_string.find('_')]
-                th1_keV = folder_string[folder_string.find('_')+1:]
 
                 th0_dacs, th1_dacs = get_dac_settings(scan_json)
                 th0_dac_list.append(th0_dacs)
