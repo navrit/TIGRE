@@ -11,20 +11,24 @@ conda list --export > conda-package-list.txt
 conda create -n tigre_env --file conda-package-list.txt
 '''
 
-import shared_functions as s
 import json
 import math
 import os
 from multiprocessing import freeze_support
+from typing import List
 
+import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
-from astropy.convolution import Gaussian2DKernel
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import SimpleITK as sitk
+from astropy.convolution import Gaussian2DKernel
+from lmfit.models import GaussianModel, StepModel
+from lmfit.lineshapes import gaussian, step
+from scipy.interpolate import interp1d, UnivariateSpline
 from tqdm import tqdm, trange
+from joblib import Parallel, delayed
 
+import shared_functions as s
 
 kernel = Gaussian2DKernel(x_stddev=2)
 
@@ -97,17 +101,8 @@ def load_energy_calibrations_per_pixel(folder: str, ) -> np.ndarray:
     return slopes, intercepts
 
 
-def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, chip_indices: list[int], slopes_per_pixel, intercepts_per_pixel, plot: bool = False, poly_order = 2, open_img_path = None) -> np.ndarray:
-
-    def power(arr: np.ndarray, pow: int) -> np.ndarray:
-        return np.array([x**pow for x in arr])
-    
-    def solve_poly_for_x(poly_coeffs: np.ndarray, y: float) -> np.ndarray:
-        pc = poly_coeffs.copy()
-        pc[-1] -= y
-        return np.roots(pc)
-    
-    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: list[int]) -> np.ndarray:
+def generate_correct_dac_values(gReconParams: dict, open_median_all_thr: np.ndarray, dac_list_all_chips: np.ndarray, chip_indices: List[int], plot: bool = False, open_img_path = None) -> np.ndarray:  
+    def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: int, j: int, half_pixels: int, chip_indices: List[int]) -> np.ndarray:
         # assert isinstance(dac_per_chip_list, np.ndarray)
         # assert dac_per_chip_list.ndim == 2 # Always N X 4, at least 8 thresholds should have been taken...
         # assert len(dac_per_chip_list[0]) == 4 # Always 4 chips
@@ -121,13 +116,28 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
         else:
             return dac_per_chip_list[:, chip_indices[3]]
 
+    # def recon_using_gaussian_fit(dac_list_all_chips, i, j, half_pixels, chip_indices, open_median_all_thr):
+    #     x_dacs_of_this_chip = get_chip_dac_from_array_using_orientation(dac_list_all_chips, i, j, half_pixels, chip_indices)
+
+    #     y_counts = open_median_all_thr[:, i, j]
+    #     assert x_dacs_of_this_chip.ndim == 1, (x_dacs_of_this_chip.ndim, x_dacs_of_this_chip)
+    #     assert len(x_dacs_of_this_chip) == len(y_counts), (len(x_dacs_of_this_chip), len(y_counts))
+        
+    #     pars_gaussian = model_gaussian.guess(y_counts, x=x_dacs_of_this_chip) # TODO could maybe move this outside the loop?
+    #     out_gaussian = model_gaussian.fit(y_counts, pars_gaussian, x=x_dacs_of_this_chip)
+    #     y_gaussian = gaussian(fit_x, out_gaussian.best_values['amplitude'], out_gaussian.best_values['center'], out_gaussian.best_values['sigma'])
+
+    #     f = interp1d(y_gaussian, fit_x) # Default: fill_value=np.nan  could do fill_value='extrapolate'
+    #     dac_correct[:, i, j] = f(y_counts) # map back from y to x coords
+    #     open_img_out[:, i, j] = y_gaussian
+
     assert isinstance(gReconParams, dict), gReconParams
-    assert isinstance(open_mean_all_thr, np.ndarray)
+    assert isinstance(open_median_all_thr, np.ndarray)
     assert isinstance(dac_list_all_chips, np.ndarray)
     
-    assert open_mean_all_thr.ndim == 3, open_mean_all_thr.ndim  # DAC, x/y, y/x
-    assert open_mean_all_thr.shape[0] > 1, open_mean_all_thr.shape
-    assert open_mean_all_thr.shape[1] % 256 == 0 and open_mean_all_thr.shape[2] % 256 == 0, open_mean_all_thr.shape
+    assert open_median_all_thr.ndim == 3, open_median_all_thr.ndim  # DAC, x/y, y/x
+    assert open_median_all_thr.shape[0] > 1, open_median_all_thr.shape
+    assert open_median_all_thr.shape[1] % 256 == 0 and open_median_all_thr.shape[2] % 256 == 0, open_median_all_thr.shape
     
     assert dac_list_all_chips.ndim == 2 # Always N X 4
     assert dac_list_all_chips.shape[0] >= 2 # N thresholds (DAC units) scanned over / acquired simultaneously - at least 8 should have been measured...
@@ -135,78 +145,73 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
     
 
     half_pixels = gReconParams['pixels'] // 2
+    fit_x = np.linspace(10, 100, 91) # x_dacs_of_this_chip[0]-20, x_dacs_of_this_chip[-1]+20
     dac_correct = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']))
-    open_img_out = np.zeros((len(dac_list_all_chips), gReconParams['pixels'], gReconParams['pixels']), dtype=np.float32)
-    # chip_indices = (0, 1, 2, 3) # TL, TR, BR, BL    Dexter = (0, 1, 2, 3)    Serval UP orientation = (2, 3, 0, 1)
+    open_img_out = np.zeros((len(fit_x), gReconParams['pixels'], gReconParams['pixels']), dtype=np.float32)
+    # chip_indices = (0, 1, 2, 3) # TL, TR, BR, BL    Dexter = (0, 1, 2, 3)    Serval UP orientation = (2, 3, 0, 1)    Serval UP MIRRORED orientation = (3, 0, 1, 2)
 
     a0 = 0
     a1 = (gReconParams['pixels'] // 2) - 1 # 255 for 512 pixels
     a2 = (gReconParams['pixels'] // 2) + 1 # 257 for 512 pixels
     a3 = gReconParams['pixels']
-    mean_per_dac_list = np.zeros((len(dac_list_all_chips)))
+    median_per_dac_list = np.zeros((len(dac_list_all_chips)))
 
     for dac in trange(0,len(dac_list_all_chips)): # assuming that dac_list_all_chips is just for either th0 or th1
-        mean_per_dac_list[dac] = 0.25 * (
-            np.mean(open_mean_all_thr[dac, a0:a1, a0:a1]) +
-            np.mean(open_mean_all_thr[dac, a0:a1, a2:a3]) +
-            np.mean(open_mean_all_thr[dac, a2:a3, a0:a1]) +
-            np.mean(open_mean_all_thr[dac, a2:a3, a2:a3])
+        median_per_dac_list[dac] = 0.25 * (
+            np.median(open_median_all_thr[dac, a0:a1, a0:a1]) +
+            np.median(open_median_all_thr[dac, a0:a1, a2:a3]) +
+            np.median(open_median_all_thr[dac, a2:a3, a0:a1]) +
+            np.median(open_median_all_thr[dac, a2:a3, a2:a3])
         )   
         # print(f'DAC = {dac_list_all_chips[dac]}, mean = {mean[dac]}')
 
-    for i in trange(0, open_mean_all_thr.shape[1]):
-        for j in range(0, open_mean_all_thr.shape[2]):
-            x_dacs_of_this_chip = np.asarray(get_chip_dac_from_array_using_orientation(dac_list_all_chips, i, j, half_pixels, chip_indices), dtype=np.float32)
-            for th in range(2):
-                x_dacs_of_this_chip[th::2] = np.add(np.multiply(slopes_per_pixel[th,i,j], x_dacs_of_this_chip[th::2]), intercepts_per_pixel[th,i,j])
 
-            y_counts = open_mean_all_thr[:, i, j]
+    model_gaussian = GaussianModel()
+    # mod_erf = StepModel(form='erf')
+
+    ########## Parallel(n_jobs=60)(delayed(sqrt)(i ** 2) for i in range(10))
+
+    for i in trange(open_median_all_thr.shape[1]): # open_median_all_thr.shape[1]
+        for j in range(open_median_all_thr.shape[2]): # open_median_all_thr.shape[2]
+            x_dacs_of_this_chip = get_chip_dac_from_array_using_orientation(dac_list_all_chips, i, j, half_pixels, chip_indices)
+
+            y_counts = open_median_all_thr[:, i, j]
             assert x_dacs_of_this_chip.ndim == 1, (x_dacs_of_this_chip.ndim, x_dacs_of_this_chip)
             assert len(x_dacs_of_this_chip) == len(y_counts), (len(x_dacs_of_this_chip), len(y_counts))
-
-            if poly_order == 0:
-                raise NotImplementedError("To be implemented")
-            if poly_order == 1:
-                raise NotImplementedError("To be implemented")
             
-            elif poly_order == 2:
-                if np.isfinite(x_dacs_of_this_chip).all():
-                    poly_coeffs, _, _, _, _ = np.polyfit(x_dacs_of_this_chip, y_counts, poly_order, full=True)
-                    for dac in range(0, len(dac_list_all_chips)):
-                        poly_roots = solve_poly_for_x(poly_coeffs, mean_per_dac_list[dac])
-                        if poly_roots.shape[0] == 0:
-                            dac_corr = np.NaN # x_chip_dac[dac]
-                        else:
-                            dac_corr = poly_roots[1]
+            pars_gaussian = model_gaussian.guess(y_counts, x=x_dacs_of_this_chip) # TODO could maybe move this outside the loop?
+            out_gaussian = model_gaussian.fit(y_counts, pars_gaussian, x=x_dacs_of_this_chip)
+            y_gaussian = gaussian(fit_x, out_gaussian.best_values['amplitude'], out_gaussian.best_values['center'], out_gaussian.best_values['sigma'])
 
-                        dac_correct[dac, i, j] = dac_corr
-                    open_img_out[:, i, j] = (poly_coeffs[0] * dac_corr**2) + (poly_coeffs[1]*dac_corr) + poly_coeffs[2]
-                else:
-                    open_img_out[:, i, j] = np.NaN
+            f = interp1d(y_gaussian, fit_x, bounds_error=False, fill_value=np.NaN) # Default: fill_value=np.nan  could do fill_value='extrapolate'
+            dac_correct[:, i, j] = f(y_counts) # map back from y to x coords
+            open_img_out[:, i, j] = y_gaussian
+            
+
+            if plot and i == 0: #and j == 1:
+                # y_counts_flip = np.flip(y_counts)
+                # pars_orig_erf = mod_erf.guess(y_counts_flip, x=x_dacs_of_this_chip)
+                # out_erf = mod_erf.fit(y_counts_flip, pars_orig_erf, x=x_dacs_of_this_chip)
+
+                # spl_default_smoothing = UnivariateSpline(x_dacs_of_this_chip, y_counts, ext='extrapolate', k=1)
+
                 
-            else:
-                raise NotImplementedError("To be implemented...?")
 
-            if plot and i == 1 and j == 1:
-                if poly_order == 0:
-                    raise NotImplementedError
-                elif poly_order == 1:
-                    raise NotImplementedError
-                elif poly_order == 2:
-                    # Supersample so we do not get artifacts - no jagged lines, only smooth lines :)
-                    fit_x = np.linspace(x_dacs_of_this_chip[0], x_dacs_of_this_chip[-1], len(x_dacs_of_this_chip))
-                    y_poly_fit = (poly_coeffs[0]*power(fit_x, 2)) + \
-                        (poly_coeffs[1]*power(fit_x, 1)) + poly_coeffs[2]
-                    plt.xlabel('Threshold (DAC)')
-                    plt.ylabel('Counts ()')
-                    plt.title(f'Pixel = {i}, {j}')
-                    
-                    plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), marker='o', label='Raw counts')
-                    plt.plot(dac_correct[:, i, j], mean_per_dac_list, marker='+', markersize=10, label='Correct DAC based on open data') # zero is added for the first dac to be displayed
-                    plt.plot(fit_x, y_poly_fit, label='Fit - poly order 2')
+                # y_erf = step(fit_x, out_erf.best_values['amplitude'], out_erf.best_values['center'], out_erf.best_values['sigma'], form='erf')[::-1]
+                # y_spline = spl_default_smoothing(fit_x)
+                plt.xlabel('Threshold (DAC)')
+                plt.ylabel('Counts ()')
+                plt.title(f'Pixel = {i}, {j}')
+                
+                plt.errorbar(x_dacs_of_this_chip, y_counts, np.sqrt(y_counts), marker='o', label='Raw counts')
+                plt.plot(dac_correct[:, i, j], median_per_dac_list, marker='+', markersize=10, label='Correct DAC based on median air data')
+                
+                plt.plot(fit_x, y_gaussian, label='Fit - Gaussian')
+                # plt.plot(fit_x, y_erf, label='Fit - 1-erf')
+                # plt.plot(fit_x, y_spline, label='Fit - Spline')
 
-                    plt.legend()
-                    plt.show()
+                plt.legend()
+                plt.show()
 
     if open_img_path != None:
         for dac in tqdm(dac_list_all_chips):
@@ -274,32 +279,12 @@ def main():
         spectral_projs_th0[i, :, :, :] = spectral_projs_th0[i, :, :, :] / exp_time[i]
         spectral_projs_th1[i, :, :, :] = spectral_projs_th1[i, :, :, :] / exp_time[i]
 
-    '''
-    Merging the open_means and thX_dac_list for all thresholds
-    '''
-    open_mean_all_thresholds = list()
-    combined_x_list = list()
     
-    for idx in range(len(th0_dac_list)):
-        open_mean_all_thresholds.append(open_mean_th0[idx, :, :])
-        open_mean_all_thresholds.append(open_mean_th1[idx, :, :])
-        
-        combined_x_list.append(th0_dac_list[idx])
-        combined_x_list.append(th1_dac_list[idx])
-        # combined_x_list.append(slopes[:, 0] * th0_dac_list[idx] + intercepts[:, 0])
-        # combined_x_list.append(slopes[:, 1] * th1_dac_list[idx] + intercepts[:, 1])
-    combined_x_list = np.asarray(combined_x_list)
-    print(np.mean(combined_x_list, axis=1))
-
-    open_mean_all_thresholds = np.array(open_mean_all_thresholds)
-
-    slopes_per_pixel, intercepts_per_pixel = load_energy_calibrations_per_pixel(r'F:\Jasper\Data\EnergyCalibration\20220808')
-
     ofc_th0 = np.empty_like(spectral_projs_th0)
     ofc_th1 = np.empty_like(spectral_projs_th0)
 
     correct_dacs = s.save_and_or_load_npy_files(
-        results_folder, f'all_dac_values.npy', lambda: generate_correct_dac_values(gReconParams, open_mean_all_thresholds, combined_x_list, chip_indices, slopes_per_pixel, intercepts_per_pixel, plot=True, poly_order=2, open_img_path=results_folder))
+        results_folder, f'all_dac_values.npy', lambda: generate_correct_dac_values(gReconParams, open_mean_th0, th0_dac_list, chip_indices, plot=False, open_img_path=results_folder))
 
     plt.imshow(correct_dacs[0, :, :])
     plt.show()
@@ -307,7 +292,7 @@ def main():
     plt.show()
 
     idx = 0
-    for dac_index in range(0, len(combined_x_list), 2):
+    for dac_index in range(0, len(th0_dac_list), 2):
         for p in range(ofc_th0.shape[0]):
             ofc_th0[idx, p, :, :] = spectral_projs_th0[idx, p, :, :] - correct_dacs[dac_index, :, :]
             ofc_th0[idx, p, :, :] = -np.log(ofc_th0[idx, p, :, :] / open_mean_th0[idx, :, :])
@@ -317,13 +302,13 @@ def main():
         plt.imshow(ofc_th0[0, 180, :, :])
         plt.show()
 
-        print(f'Doing recon finally! Mean energy = {combined_x_list[dac_index]} keV')
+        print(f'Doing recon finally! Mean energy = {th0_dac_list[dac_index]} keV')
         img, geom = s.recon_scan(gReconParams, ofc_th0[idx, :, :, :], angles, detector_x_offsets,
                                  detector_y_offsets, centre_of_rotation_offset_x_mm, centre_of_rotation_offset_y_mm, True)
         ni_img = nib.Nifti1Image(img, np.eye(4))
         ni_img = s.make_Nifti1Image(img, geom.dVoxel)
         s.save_array(results_folder, 'recon_'
-                     + str(combined_x_list[dac_index])+'OFC.nii', ni_img)
+                     + str(th0_dac_list[dac_index])+'OFC.nii', ni_img)
         idx += 1
     plt.imshow(ofc_th0[0, 0, :, :])
     plt.show()
