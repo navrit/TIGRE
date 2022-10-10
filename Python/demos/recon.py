@@ -15,7 +15,7 @@ import json
 import math
 import os
 from multiprocessing import freeze_support
-from typing import List, Tuple
+from typing import List
 
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -121,13 +121,14 @@ def get_chip_dac_from_array_using_orientation(dac_per_chip_list: np.ndarray, i: 
         return dac_per_chip_list[:, chip_indices[3]]
 
 
-def gaussian_fit(model, x, y):
+def gaussian_fit(x, y):
+    model = GaussianModel()
     parameters = model.guess(y, x=x)  # TODO could maybe move this outside the loop?
     out_gaussian = model.fit(y, parameters, x=x)
     return out_gaussian.best_values['amplitude'], out_gaussian.best_values['center'], out_gaussian.best_values['sigma']
 
 
-def fit_proj_data_values_gaussian(model_gaussian: GaussianModel, data: np.ndarray, dacs_list: np.ndarray) -> np.ndarray:
+def fit_proj_data_values_gaussian(data: np.ndarray, dacs_list: np.ndarray) -> np.ndarray:
     assert data.ndim == 4  # DAC, proj, y/x, y/x
     assert data.shape[0] >= 3  # We need at least 3 points to do a fit...
     # assert data.shape[1] > 100  # Should be >100 projections?
@@ -147,7 +148,7 @@ def fit_proj_data_values_gaussian(model_gaussian: GaussianModel, data: np.ndarra
     # for i in trange(0, len(y_gaussian_parameters), parameters):
     #     amplitudes[i], centres[i], sigmas[i] = gaussian_fit(
     #         model_gaussian, dacs_list, fit_array[:, i])
-    y_gaussian_parameters = np.asarray(Parallel(n_jobs=60)(delayed(gaussian_fit)(model_gaussian, dacs_list, fit_array[:,i]) for i in trange(0, data.shape[1] * data.shape[2] * data.shape[3], 1)))
+    y_gaussian_parameters = np.asarray(Parallel(n_jobs=32)(delayed(gaussian_fit)(dacs_list, fit_array[:,i]) for i in trange(0, data.shape[1] * data.shape[2] * data.shape[3], 1)))
     amplitudes = y_gaussian_parameters[:,0]
     centres = y_gaussian_parameters[:,1]
     sigmas = y_gaussian_parameters[:,2]
@@ -362,24 +363,24 @@ def main():
     N = spectral_projs_th0.shape[1]
     p0 = 0
     p1 = gReconParams['pixels']//2
-    p2 = gReconParams['pixels']
-    model_gaussian = GaussianModel()
+    p2 = p1 * 2
 
+    ''' TODO Refactor and test this so it runs per image, not on the whole 4D array / pixels simultaneously. '''
     # spectral_projs_th0 --> Points on x axis (scanned DAC or similar) projections y x
-    regressions_2 = fit_proj_data_values_gaussian(model_gaussian, spectral_projs_th0[:, :N, p1:p2, p1:p2], th0_dacs_list[:, 2])  # BR
-    regressions_1 = fit_proj_data_values_gaussian(model_gaussian, spectral_projs_th0[:, :N, p1:p2, p0:p1], th0_dacs_list[:, 1])  # BL
-    regressions_3 = fit_proj_data_values_gaussian(model_gaussian, spectral_projs_th0[:, :N, p0:p1, p0:p1], th0_dacs_list[:, 3])  # TL
-    regressions_0 = fit_proj_data_values_gaussian(model_gaussian, spectral_projs_th0[:, :N, p0:p1, p1:p2], th0_dacs_list[:, 0])  # TR
+    regressions_2 = fit_proj_data_values_gaussian(spectral_projs_th0[:, :N, p1:p2, p1:p2], th0_dacs_list[:, 2])  # BR
+    regressions_1 = fit_proj_data_values_gaussian(spectral_projs_th0[:, :N, p1:p2, p0:p1], th0_dacs_list[:, 1])  # BL
+    regressions_3 = fit_proj_data_values_gaussian(spectral_projs_th0[:, :N, p0:p1, p0:p1], th0_dacs_list[:, 3])  # TL
+    regressions_0 = fit_proj_data_values_gaussian(spectral_projs_th0[:, :N, p0:p1, p1:p2], th0_dacs_list[:, 0])  # TR
 
-    plt.plot(np.nanmedian(regressions_0[0], axis=(1, 2)))
-    plt.show()
-    plt.plot(np.nanmedian(regressions_0[1], axis=(1, 2)))
-    plt.show()
-    plt.plot(np.nanmedian(regressions_0[2], axis=(1, 2)))
-    plt.show()
-    print(np.nanmedian(regressions_0[0], axis=(1, 2)))
-    print(np.nanmedian(regressions_0[1], axis=(1, 2)))
-    print(np.nanmedian(regressions_0[2], axis=(1, 2)))
+    # plt.plot(np.nanmedian(regressions_0[0], axis=(1, 2)))
+    # plt.show()
+    # plt.plot(np.nanmedian(regressions_0[1], axis=(1, 2)))
+    # plt.show()
+    # plt.plot(np.nanmedian(regressions_0[2], axis=(1, 2)))
+    # plt.show()
+    # print(np.nanmedian(regressions_0[0], axis=(1, 2)))
+    # print(np.nanmedian(regressions_0[1], axis=(1, 2)))
+    # print(np.nanmedian(regressions_0[2], axis=(1, 2)))
 
     proj_data_fits = np.empty(
         (3, spectral_projs_th0.shape[1], spectral_projs_th0.shape[2], spectral_projs_th0.shape[3]))
@@ -389,17 +390,19 @@ def main():
     proj_data_fits[:, :N, p0:p1, p0:p1] = regressions_2
     proj_data_fits[:, :N, p0:p1, p1:p2] = regressions_3
 
+    s.save_array(results_folder, 'proj_data_fits.npy', proj_data_fits)
+
     ''' Does this selected region contain only air over the whole scan?
         TODO Should do this per sinogram row (per time / projection) '''
     air_column_number = 5
 
-    img_check = np.median(spectral_projs_th0[0]/np.sum(spectral_open_th0[0], axis=0), axis=1)
-    plt.imshow(img_check)
-    plt.axvline(0, c='k')
-    plt.axvline(air_column_number, c='r')
-    plt.axvline(gReconParams['pixels'] - air_column_number, c='r')
-    plt.axvline(gReconParams['pixels'], c='k')
-    plt.show()
+    # img_check = np.median(spectral_projs_th0[0]/np.sum(spectral_open_th0[0], axis=0), axis=1)
+    # plt.imshow(img_check)
+    # plt.axvline(0, c='k')
+    # plt.axvline(air_column_number, c='r')
+    # plt.axvline(gReconParams['pixels'] - air_column_number, c='r')
+    # plt.axvline(gReconParams['pixels'], c='k')
+    # plt.show()
 
     idx = 0
     for dac_index in trange(0, spectral_projs_th0.shape[0]):
@@ -420,8 +423,8 @@ def main():
         c = proj_data_fits_flat[1, i]
         d = proj_data_fits_flat[2, i]
         e = gaussian(a, b, c, d)
-        plt.plot(a, e)
-        plt.show()
+        # plt.plot(a, e)
+        # plt.show()
         # reconstructed_proj_data_flat[i:ii] = gaussian(corrected_dacs_from_open_images_for_n_projections[i:ii], proj_data_fits_flat[0, i:ii], proj_data_fits_flat[1, i:ii], proj_data_fits_flat[2, i:ii])
         # for i in trange(corrected_dacs_from_open_images_for_n_projections.shape[0]):
         #     reconstructed_proj_data_flat[i] = gaussian(corrected_dacs_from_open_images_for_n_projections[i], proj_data_fits_flat[0, i], proj_data_fits_flat[1, i], proj_data_fits_flat[2, i])
@@ -437,8 +440,8 @@ def main():
         ofc_th0 = -np.log(corrected_projection_data_th0/median)
         # ofc_bpc_th0 = s.save_and_or_load_npy_files(results_folder, f'th{dac_index}_bpc.npy', lambda: s.generate_bad_pixel_corrected_array(ofc_th0, gReconParams))
 
-        plt.imshow(ofc_th0[0, :, :])
-        plt.show()
+        # plt.imshow(ofc_th0[0, :, :])
+        # plt.show()
 
         print(f'Doing recon finally! Mean energy = {th0_dacs_list[dac_index]} keV')
         img, geom = s.recon_scan(gReconParams, ofc_th0, angles, detector_x_offsets,
