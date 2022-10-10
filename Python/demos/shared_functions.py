@@ -2,7 +2,8 @@ import json
 import multiprocessing
 import os
 from multiprocessing import freeze_support
-from typing import List
+from symbol import parameters
+from typing import List, Tuple
 
 import nibabel as nib
 import numpy as np
@@ -18,6 +19,7 @@ import cv2
 from joblib import Parallel, delayed
 import SimpleITK as sitk
 from lmfit.models import GaussianModel
+from lmfit.lineshapes import gaussian
 
 import matplotlib.pyplot as plt
 
@@ -910,22 +912,22 @@ def generate_correct_dac_values(gReconParams: dict, open_mean_all_thr: np.ndarra
     # return dac_correct
 
 
-def fit_proj_data_values(data_set: np.ndarray, dacs_list: np.ndarray, polyorder = 2):
+def fit_proj_data_values_polynomial(data: np.ndarray, dacs_list: np.ndarray, polyorder: int = 2) -> Tuple[np.ndarray]:
 
-    assert len(data_set.shape) == 4  # DAC, proj, x, y
-    fit_array = data_set.reshape(data_set.shape[0], -1)
+    assert len(data.shape) == 4  # DAC, proj, y/x, y/x
+    fit_array = data.reshape(data.shape[0], -1)
 
     if polyorder == 1:
         regressions, res, _, _, _ = np.polyfit(dacs_list, np.log(fit_array), polyorder, w=np.sqrt(dacs_list), full=True)
     elif polyorder == 2:
         regressions, res, _, _, _ = np.polyfit(dacs_list, fit_array, polyorder, full=True)
 
-    regressions = regressions.reshape(polyorder+1, data_set.shape[1], data_set.shape[2], data_set.shape[3])
-    residuals = res.reshape(data_set.shape[1], data_set.shape[2], data_set.shape[3])
+    regressions = regressions.reshape(polyorder+1, data.shape[1], data.shape[2], data.shape[3])
+    residuals = res.reshape(data.shape[1], data.shape[2], data.shape[3])
     return regressions, residuals
 
 
-def generate_bad_pixel_corrected_array(ofc, gReconParams):
+def generate_bad_pixel_corrected_array(ofc: np.ndarray, gReconParams: dict) -> np.ndarray:
     print('Doing median filter on OFC data...')
     ofc_mf = median_filter_projection_set(ofc, 5)
     diff_mf = np.abs(ofc-ofc_mf)
