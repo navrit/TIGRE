@@ -20,17 +20,15 @@ from typing import List
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+import pygpufit.gpufit as gf
 import SimpleITK as sitk
-from astropy.convolution import Gaussian2DKernel
-from lmfit.models import GaussianModel, StepModel
-from lmfit.lineshapes import gaussian, step
-from scipy.interpolate import interp1d, UnivariateSpline
-from tqdm import tqdm, trange
 from joblib import Parallel, delayed
+from lmfit.lineshapes import gaussian, step
+from lmfit.models import GaussianModel, StepModel
+from scipy.interpolate import UnivariateSpline, interp1d
+from tqdm import tqdm, trange
 
 import shared_functions as s
-
-kernel = Gaussian2DKernel(x_stddev=2)
 
 
 def make_gReconParams(output_folder: str, base_json_file: str) -> dict:
@@ -287,8 +285,117 @@ def generate_correct_dac_values(gReconParams: dict, open_median_all_thr: np.ndar
 
     return dac_correct
 
+def gaussian_peak_1d(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    """
+    Generates a 1D Gaussian peak.
+    See http://gpufit.readthedocs.io/en/latest/fit_model_functions.html#d-gaussian-function
+
+    :param x: x grid position values
+    :param p: parameters (amplitude, center position, width, offset)
+    :return: Gaussian peak
+    """
+    p = p.flatten()
+    return p[0] * np.exp(-(x - p[1])**2 / (2 * p[2]**2)) + p[3]
+
+def cuda_checks():
+    # cuda available checks
+    print('CUDA available: {}'.format(gf.cuda_available()))
+    if not gf.cuda_available():
+        raise RuntimeError(gf.get_last_error())
+    print('CUDA versions runtime: {}, driver: {}'.format(*gf.get_cuda_version()))
+
+def print_summary(model_id, n_fits, n_points, n_parameters, states, chi_squares, number_iterations, execution_time, parameters, data, initial_parameters, x, plot=False):
+    # print fit results
+    converged = states == 0
+    print('*Gpufit*')
+
+    # print summary
+    print('\nmodel ID:        {}'.format(model_id))
+    print('number of fits:  {}'.format(n_fits))
+    print('fit size:        {}'.format(n_points))
+    print('mean chi_square: {:.2f}'.format(np.mean(chi_squares[converged])))
+    print('iterations:      {:.2f}'.format(np.mean(number_iterations[converged])))
+    print('time:            {:.2f} s'.format(execution_time))
+
+    # get fit states
+    number_converged = np.sum(converged)
+    print('\nratio converged         {:6.2f} %'.format(number_converged / n_fits * 100))
+    print('ratio max it. exceeded  {:6.2f} %'.format(np.sum(states == 1) / n_fits * 100))
+    print('ratio singular hessian  {:6.2f} %'.format(np.sum(states == 2) / n_fits * 100))
+    print('ratio neg curvature MLE {:6.2f} %'.format(np.sum(states == 3) / n_fits * 100))
+
+    # mean, std of fitted parameters
+    converged_parameters = parameters[converged, :]
+    converged_parameters_mean = np.mean(converged_parameters, axis=0)
+    converged_parameters_std = np.std(converged_parameters, axis=0)
+    print('\nparameters of 1D Gaussian peak')
+
+    for i in range(n_parameters):
+        print('p{} | mean = {:6.2f} | std = {:6.2f}'.format(i, converged_parameters_mean[i], converged_parameters_std[i]))
+    
+    if plot:
+        for i in range(n_fits):
+            print(initial_parameters[i])
+            # print(converged_parameters[i])
+            plt.plot(x, data[i], label='data')
+            plt.plot(x, gaussian_peak_1d(x, initial_parameters[i]), label='initial')
+            # plt.plot(x, gaussian_peak_1d(x, converged_parameters[i]), label='converged')
+            plt.legend()
+            plt.show()
+
+def do_fits(data: np.ndarray, x: np.ndarray) -> np.ndarray:
+    assert data.ndim == 2
+    data = data.transpose()
+    n_fits: int = data.shape[0]
+    n_points: int = data.shape[1] # energy points (scanned threshold or similar)
+    assert n_fits >= n_points
+    assert len(x) == n_points # x = np.linspace(0,100,n_points)
+    assert np.min(x) >= 0
+    assert np.max(x) >= 0
+
+    plot = True
+    
+    model_id = gf.ModelID.GAUSS_1D
+    n_parameters = 4 # parameters (amplitude, center position, width, offset)
+    # n_fits = projections (1-720 most likely) X energy points (scanned threshold or similar) X pixels (512x512)
+
+    initial_parameters = np.tile(np.repeat(1., n_parameters), (n_fits, 1)).astype(np.float32)
+
+    # data = np.zeros((1, n_points), dtype=np.float32)
+    # data = np.tile(data, (n_fits, 1))
+
+    # for i in trange(n_fits):
+        # # data[i] = Data I can fit a Gaussian to!
+        # m = np.median(data[i]) # y, x
+        # initial_parameters[i,0] = data[i,0] - m
+        # initial_parameters[i,1] = np.argmax(data[i])
+        # # initial_parameters[i,2] = 1 # initial_parameters[i,2] = np.std(data[i])
+        # initial_parameters[i,3] = m
+
+    m = np.median(data) # y, x
+    initial_parameters[:,0] = data[:,0] - m
+    initial_parameters[:,1] = np.argmax(data)
+    # initial_parameters[i,2] = 1 # initial_parameters[i,2] = np.std(data[i])
+    initial_parameters[:,3] = m
+
+    data = np.ascontiguousarray(data.astype(np.float32))
+
+    plt.plot(x, data[1])
+    plt.show()
+
+    # run Gpufit
+    parameters, states, chi_squares, number_iterations, execution_time = gf.fit(data, None, model_id, initial_parameters)
+    # if not np.all(states == 0):
+        # print(f'Some Gaussian fits failed: {np.count_nonzero(states)}/{n_fits}')
+
+    print_summary(model_id, n_fits, n_points, n_parameters, states, chi_squares, number_iterations, execution_time, parameters, data, initial_parameters, x, plot)
+
+    return parameters
+
 
 def main():
+    cuda_checks()
+
     drive = 'f:\\'
     # base_folder = os.path.join(drive, 'jasper', 'data', '20220812_BreastTissueFFPE')
     # base_folder = os.path.join(drive, 'jasper', 'data', '20220825_LegoMan')
@@ -356,6 +463,12 @@ def main():
     # corrected_DAC_values_from_open_images_th1 = s.save_and_or_load_npy_files(
     #     results_folder, f'th1_dac_values.npy', lambda: generate_correct_dac_values(gReconParams, open_median_th1, th1_dac_list, chip_indices, plot=False, open_img_path=results_folder))
 
+    spectral_projs_flat_th0 = spectral_projs_th0.reshape(spectral_projs_th0.shape[0], spectral_projs_th0.shape[1]*spectral_projs_th0.shape[2]*spectral_projs_th0.shape[3])
+    regressions_2 = do_fits(spectral_projs_flat_th0, th0_dacs_list[:, 2])  # BR
+
+
+
+
     ''' With these corrected DACs we use the Gaussian (in this case) fits per pixel on the projection data to calculate the corrected count data. 
     
     TODO I could use spline/interpolated data also! '''
@@ -381,6 +494,10 @@ def main():
     # print(np.nanmedian(regressions_0[0], axis=(1, 2)))
     # print(np.nanmedian(regressions_0[1], axis=(1, 2)))
     # print(np.nanmedian(regressions_0[2], axis=(1, 2)))
+
+
+
+
 
     proj_data_fits = np.empty(
         (3, spectral_projs_th0.shape[1], spectral_projs_th0.shape[2], spectral_projs_th0.shape[3]))
