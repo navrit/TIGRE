@@ -139,8 +139,8 @@ def get_detector_offsets(json_file_full_path: str) -> tuple[float]:
             detector_x = np.array(detector_x)
             detector_y = np.array(detector_y)
             # detector offsets are calculated with respect to the first projection, assuming that it is the proposed central scan setup.
-            detector_x_offsets = -1*detector_x-detector_x[0]
-            detector_y_offsets = -1*detector_y-detector_y[0]
+            detector_x_offsets = -1 * (detector_x - detector_x[0])
+            detector_y_offsets = -1 * (detector_y - detector_y[0])
 
             return detector_x_offsets, detector_y_offsets
     else:
@@ -660,30 +660,28 @@ def generate_numpy_files(base_folder, results_folder, json_obj, gReconParams):
             exposure_times
 
 
-def generate_numpy_files_before_20221014(json, base_folder, gReconParams, results_folder):
-    def projections_loader(json_file, key, th, bad_pixel_corr=True, median_filter=False, fill_gap=True):
+def generate_numpy_files_before_20221014(json_file, base_folder, gReconParams, results_folder):
+    def projections_loader(json_file_full_path, key, th, bad_pixel_corr=True, median_filter=False, fill_gap=True):
 
-        if os.path.exists(json_file):
-            dirname = os.path.dirname(json_file)
-            json_file_name = os.path.basename(json_file)
-            f = open(json_file)
-            dashboard = json.load(f)
-            total_file_list = []
+        if os.path.exists(json_file_full_path):
+            dirname = os.path.dirname(json_file_full_path)
+            json_file_name = os.path.basename(json_file_full_path)
+            with open(json_file_full_path) as f:
+                json_obj = json.load(f)
+                total_file_list = []
 
-            for i in dashboard[key]:
-                projection_list = []
-                if json_file_name.split('_', 4)[1].startswith('0'):
-                    filename = os.path.join(
-                        dirname, dashboard[key][i][f'filenames_th{th}'])
-                    projection_list.append(filename)
-                else:
-                    for j in dashboard[key][i][f'filenames_th{th}']:
+                for i in json_obj[key]:
+                    projection_list = []
+                    if json_file_name.split('_', 4)[1].startswith('0'):
                         filename = os.path.join(
-                            dirname, dashboard[key][i][f'filenames_th{th}'][j]['name'])
+                            dirname, json_obj[key][i][f'filenames_th{th}'])
                         projection_list.append(filename)
-                total_file_list.append(projection_list)
-
-            f.close()
+                    else:
+                        for j in json_obj[key][i][f'filenames_th{th}']:
+                            filename = os.path.join(
+                                dirname, json_obj[key][i][f'filenames_th{th}'][j]['name'])
+                            projection_list.append(filename)
+                    total_file_list.append(projection_list)
 
             result = Parallel(n_jobs=60)(delayed(load_and_preprocess_projections)(
                 x, bad_pixel_corr, median_filter, fill_gap) for x in total_file_list)
@@ -694,8 +692,8 @@ def generate_numpy_files_before_20221014(json, base_folder, gReconParams, result
     scan_folders = list()
     files_per_folder = list()
     # folder_sizes = list()
-    for i in tqdm(json['thresholdscan']):
-        scan_folder = os.path.join(base_folder, json['thresholdscan'][i]['projectionsfolder'])
+    for i in tqdm(json_file['thresholdscan']):
+        scan_folder = os.path.join(base_folder, json_file['thresholdscan'][i]['projectionsfolder'])
         n_files = (len([entry for entry in os.listdir(scan_folder)
                    if os.path.isfile(os.path.join(scan_folder, entry))]))
         scan_folders.append(scan_folder)
@@ -709,23 +707,23 @@ def generate_numpy_files_before_20221014(json, base_folder, gReconParams, result
     # assert all( map(lambda f: f == folder_sizes[0], folder_sizes ) ), folder_sizes
     assert all(map(lambda f: f == files_per_folder[0], files_per_folder)), files_per_folder
 
-    for i in tqdm(json['thresholdscan']):
+    for i in tqdm(json_file['thresholdscan']):
         scan_folder = os.path.join(
-            base_folder, json['thresholdscan'][i]['projectionsfolder'])
+            base_folder, json_file['thresholdscan'][i]['projectionsfolder'])
         scan_json = os.path.join(
-            scan_folder, json['thresholdscan'][i]['projections_json'])
-        if 'openimagesfolder' in json:
+            scan_folder, json_file['thresholdscan'][i]['projections_json'])
+        if 'openimagesfolder' in json_file:
             open_image_folder = os.path.join(
-                base_folder, json['thresholdscan'][i]['openimagesfolder'])
+                base_folder, json_file['thresholdscan'][i]['openimagesfolder'])
         else:
             open_image_folder = scan_folder
-        if 'openimages_json' in json:
+        if 'openimages_json' in json_file:
             open_image_json = os.path.join(
-                open_image_folder, json['thresholdscan'][i]['openimages_json'])
+                open_image_folder, json_file['thresholdscan'][i]['openimages_json'])
         else:
             open_image_json = scan_json
 
-        folder_string = json['thresholdscan'][i]['projectionsfolder']
+        folder_string = json_file['thresholdscan'][i]['projectionsfolder']
         if folder_string.startswith('0'):
             th0_keV = folder_string.split('_', 3)[1]
             th1_keV = folder_string.split('_', 3)[-1]
@@ -1053,19 +1051,19 @@ def generate_bad_pixel_corrected_array(ofc: np.ndarray, original_proj: np.ndarra
 
     # Badmap --> 1 = Good, 0 = Bad pixels
 
-    print('Doing median filter on OFC data...')
-    ofc_mf = median_filter_projection_set(ofc, 5)
-    diff_mf = np.abs(ofc-ofc_mf)
-    meanmap = np.mean(diff_mf, axis=0)
-    stdmap = np.std(diff_mf, axis=0)
-    badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
-    half = np.int32(badmap.shape[0]/2)
-    badmap[half-2:half+1] = 0
-    badmap[:, half-2:half+1] = 0
+    # print('Doing median filter on OFC data...')
+    # ofc_mf = median_filter_projection_set(ofc, 5)
+    # diff_mf = np.abs(ofc-ofc_mf)
+    # meanmap = np.mean(diff_mf, axis=0)
+    # stdmap = np.std(diff_mf, axis=0)
+    # badmap = np.ones((gReconParams['pixels'], gReconParams['pixels']))
+    # half = np.int32(badmap.shape[0]/2)
+    # badmap[half-2:half+1] = 0
+    # badmap[:, half-2:half+1] = 0
 
-    ''' These look okay!!! #AFTER_REVIEWING. '''
-    badmap[meanmap > 0.2] = 0
-    badmap[stdmap > 0.05] = 0
+    # ''' These look okay!!! #AFTER_REVIEWING. '''
+    # badmap[meanmap > 0.2] = 0
+    # badmap[stdmap > 0.05] = 0
 
     # bdmap = np.zeros((ofc.shape[1],ofc.shape[2]))
     # for i in range(ofc.shape[0]):
@@ -1095,29 +1093,29 @@ def generate_bad_pixel_corrected_array(ofc: np.ndarray, original_proj: np.ndarra
     # plt.hist(badmap.flatten(),bins = 10)
     # plt.show()
     
-    # final_badmap = np.zeros_like(ofc)
-    # for slice in range(0,ofc.shape[0]):
-    #     current_proj = original_proj[slice] - ofc[slice]
-    #     current_proj[current_proj == np.nan] = np.nan
-    #     current_proj[current_proj == np.Inf] = np.nan
-    #     current_proj[current_proj == -np.Inf] = np.nan
-    #     mean_current_proj = np.nanmean(current_proj)
-    #     std_current_proj = np.nanstd(current_proj)
-    #     thresh = 3*std_current_proj
+    final_badmap = np.zeros_like(ofc)
+    for slice in range(0,ofc.shape[0]):
+        current_proj = original_proj[slice] - ofc[slice]
+        current_proj[current_proj == np.nan] = np.nan
+        current_proj[current_proj == np.Inf] = np.nan
+        current_proj[current_proj == -np.Inf] = np.nan
+        mean_current_proj = np.nanmean(current_proj)
+        std_current_proj = np.nanstd(current_proj)
+        thresh = 3*std_current_proj
 
-    #     current_proj[current_proj > mean_current_proj + thresh] = np.nan
-    #     current_proj[current_proj < mean_current_proj - thresh] = np.nan
+        current_proj[current_proj > mean_current_proj + thresh] = np.nan
+        current_proj[current_proj < mean_current_proj - thresh] = np.nan
 
-    #     current_badmap = np.zeros_like(current_proj)
-    #     current_badmap *= current_proj
-    #     current_badmap = np.nan_to_num(current_badmap,nan = 1)
+        current_badmap = np.zeros_like(current_proj)
+        current_badmap *= current_proj
+        current_badmap = np.nan_to_num(current_badmap,nan = 1)
 
-    #     final_badmap[slice,:,:] = current_badmap
+        final_badmap[slice,:,:] = current_badmap
 
-    # final_bin = np.sum(final_badmap,axis=0)
-    # final_bin[final_bin >= 1] = 1
-    # final_bin -= 1 
-    # final_bin *= -1
+    final_bin = np.sum(final_badmap,axis=0)
+    final_bin[final_bin >= 1] = 1
+    final_bin -= 1 
+    final_bin *= -1
 
     # print(final_bin.shape)
     # plt.imshow(final_bin, interpolation='none')
@@ -1125,8 +1123,8 @@ def generate_bad_pixel_corrected_array(ofc: np.ndarray, original_proj: np.ndarra
     # plt.show()
 
 
-    # ofc_bpc = apply_badmap_to_projections(ofc, final_bin)
-    ofc_bpc = apply_badmap_to_projections(ofc, badmap)
+    ofc_bpc = apply_badmap_to_projections(ofc, final_bin)
+    # ofc_bpc = apply_badmap_to_projections(ofc, badmap)
     return ofc_bpc
 
 
