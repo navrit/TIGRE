@@ -27,6 +27,9 @@ from lmfit.lineshapes import gaussian, step
 from lmfit.models import GaussianModel, StepModel
 from scipy.interpolate import UnivariateSpline, interp1d
 from tqdm import tqdm, trange
+from scipy.special import erfc
+from lmfit import Model
+
 
 import shared_functions as s
 
@@ -343,54 +346,42 @@ def print_summary(model_id, n_fits, n_points, n_parameters, states, chi_squares,
             plt.legend()
             plt.show()
 
+def my_erfc(x, centre, width, amplitude):
+    return (amplitude * erfc((x-centre)/width))
+
 def do_fits(data: np.ndarray, x: np.ndarray) -> np.ndarray:
     assert data.ndim == 2
-    data = data.transpose()
-    n_fits: int = data.shape[0]
-    n_points: int = data.shape[1] # energy points (scanned threshold or similar)
-    assert n_fits >= n_points
-    assert len(x) == n_points # x = np.linspace(0,100,n_points)
+    # n_fits: int = data.shape[0]
+    # n_points: int = data.shape[1] # energy points (scanned threshold or similar)
+    # assert n_fits >= n_points
+    # assert len(x) == n_points # x = np.linspace(0,100,n_points)
     assert np.min(x) >= 0
-    assert np.max(x) >= 0
+    assert np.max(x) > np.min(x)
 
-    plot = True
+    plot = False
     
-    model_id = gf.ModelID.GAUSS_1D
-    n_parameters = 4 # parameters (amplitude, center position, width, offset)
-    # n_fits = projections (1-720 most likely) X energy points (scanned threshold or similar) X pixels (512x512)
+    model = Model(my_erfc)
+    centre = 25
+    width = 40
+    amplitude = 35000 # np.nanmedian(data[0], axis=) ??
+    x_erfc = np.linspace(0, 200, 10* len(x), dtype=np.float32)
 
-    initial_parameters = np.tile(np.repeat(1., n_parameters), (n_fits, 1)).astype(np.float32)
-
-    # data = np.zeros((1, n_points), dtype=np.float32)
-    # data = np.tile(data, (n_fits, 1))
-
-    # for i in trange(n_fits):
-        # # data[i] = Data I can fit a Gaussian to!
-        # m = np.median(data[i]) # y, x
-        # initial_parameters[i,0] = data[i,0] - m
-        # initial_parameters[i,1] = np.argmax(data[i])
-        # # initial_parameters[i,2] = 1 # initial_parameters[i,2] = np.std(data[i])
-        # initial_parameters[i,3] = m
-
-    m = np.median(data) # y, x
-    initial_parameters[:,0] = data[:,0] - m
-    initial_parameters[:,1] = np.argmax(data)
-    # initial_parameters[i,2] = 1 # initial_parameters[i,2] = np.std(data[i])
-    initial_parameters[:,3] = m
-
-    data = np.ascontiguousarray(data.astype(np.float32))
-
-    plt.plot(x, data[1])
-    plt.show()
-
-    # run Gpufit
-    parameters, states, chi_squares, number_iterations, execution_time = gf.fit(data, None, model_id, initial_parameters)
-    # if not np.all(states == 0):
-        # print(f'Some Gaussian fits failed: {np.count_nonzero(states)}/{n_fits}')
-
-    print_summary(model_id, n_fits, n_points, n_parameters, states, chi_squares, number_iterations, execution_time, parameters, data, initial_parameters, x, plot)
-
-    return parameters
+    params = np.zeros(shape=(3, data.shape[1]))
+    for i in trange(data.shape[1]):
+        result = model.fit(data[:,i], x=x, centre=centre, width=width, amplitude=amplitude)
+        params[:,i] = [result.best_values['centre'], result.best_values['width'], result.best_values['amplitude']]
+        
+        # if plot:
+        #     fig, ax = plt.subplots()
+        #     fig.tight_layout()
+            
+        #     ax.plot(x, y, '.k')
+        #     ax.plot(x, my_erfc(x, 25, 40, 35000), '-b')
+        #     ax.plot(x_erfc, my_erfc(x_erfc, result.best_values['centre'], result.best_values['width'], result.best_values['amplitude']), '-g')
+            
+        #     plt.legend()
+        #     plt.show()
+    return params
 
 
 def main():
