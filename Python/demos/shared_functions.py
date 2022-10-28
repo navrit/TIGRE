@@ -1,5 +1,3 @@
-
-
 import json
 import os
 from typing import List, Tuple, final
@@ -17,13 +15,13 @@ from skimage.registration import phase_cross_correlation
 import cv2
 from joblib import Parallel, delayed
 import SimpleITK as sitk
-from lmfit.models import GaussianModel
+# from lmfit.models import GaussianModel
 from lmfit.lineshapes import gaussian
-import matplotlib
+# import matplotlib
 import matplotlib.pyplot as plt
 
 
-def load_and_preprocess_projections(file_paths: list[str], bad_pixel_corr=True, median_filter=False, fill_gap=True, dtype=np.float32):
+def load_and_preprocess_projections(file_paths: List[str], bad_pixel_corr=True, median_filter=False, fill_gap=True, dtype=np.float32):
     assert len(file_paths) >= 1, len(file_paths)
 
     arr = np.array([])
@@ -40,27 +38,22 @@ def load_and_preprocess_projections(file_paths: list[str], bad_pixel_corr=True, 
     assert arr.ndim == 2, f'finalarray.ndim == {arr.ndim} (WRONG), shape = {arr.shape}'
     assert arr.shape[0] % 128 == 0, arr.shape[0]
     assert arr.shape[1] % 128 == 0, arr.shape[1]
+    if fill_gap:
+        assert bad_pixel_corr == True, 'Cannot fill the gap without bad_pixel_corr'
+
 
     if np.any(arr):
         if fill_gap:
-            gap = 4
+            gap  = 4
             cross = np.zeros((arr.shape[0]+gap, arr.shape[1]+gap))
             half = np.int32(arr.shape[0]/2)
+            # discard all the information in the cross area, and interpolate later in the bad_pixel_corr
+            arr[half-1:half+1, :] = 0
+            arr[:, half-1:half+1] = 0
             cross[0:half, 0:half] = arr[0:half, 0:half]
             cross[0:half, half+gap:cross.shape[1]] = arr[0:half, half:arr.shape[1]]
             cross[half+gap:cross.shape[0], 0:half] = arr[half:arr.shape[0], 0:half]
-            cross[half+gap:cross.shape[0], half+gap:cross.shape[1]
-                  ] = arr[half:arr.shape[0], half:arr.shape[1]]
-            for j in trange(0, cross.shape[0]):
-                value = cross[j, half-1]/2
-                cross[j, half-1:half+gap] = value
-                value = cross[j, half+gap]/2
-                cross[j, half-1+gap:half+1+gap] = value
-                value = cross[half-1, j]/2
-                cross[half-1:half+gap, j] = value
-                value = cross[half+gap, j]/2
-                cross[half-1+gap:half+1+gap, j] = value
-            cross[half-1:half+1, half-1:half+1] = np.nan
+            cross[half+gap:cross.shape[0], half+gap:cross.shape[1]] = arr[half:arr.shape[0], half:arr.shape[1]]
             arr = cross[2:-2, 2:-2]
 
         if bad_pixel_corr:
@@ -68,7 +61,7 @@ def load_and_preprocess_projections(file_paths: list[str], bad_pixel_corr=True, 
             arr[arr == -np.inf] = 0
             arr[arr > 1e6] = 0
             arr[arr <= 0] = 0
-            half = np.int32(arr.shape[0]/2)
+            # half = np.int32(arr.shape[0]/2)
 
             if np.count_nonzero(arr == 0) > 0:
                 valid_mask = (arr > 0)
@@ -125,7 +118,7 @@ def get_proj_angles(json_file_full_path: str):
         return None
 
 
-def get_detector_offsets(json_file_full_path: str) -> tuple[float]:
+def get_detector_offsets(json_file_full_path: str) -> Tuple[float]:
     '''Old scan type'''
     if os.path.exists(json_file_full_path):
         with open(json_file_full_path) as f:
@@ -176,7 +169,7 @@ def get_exposure_time_projection(json_file_full_path: str) -> float:
     return total_exposure_time
 
 
-def get_dac_settings(json_file_full_path: str) -> tuple[list[int]]:
+def get_dac_settings(json_file_full_path: str) -> Tuple[List[int]]:
     '''Old scan type'''
     th0_dacs = []
     th1_dacs = []
